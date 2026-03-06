@@ -40,16 +40,18 @@ jobs:
 
           # 1️⃣ التثبيت الإجباري للمتطلبات
           print("[LOG] 🛠️ تهيئة الترسانة وتثبيت المتطلبات...")
-          os.system("pip install -U requests edge-tts deep-translator pytrends opencv-python-headless nest_asyncio numpy -q")
+          os.system("pip install -U requests edge-tts deep-translator pytrends opencv-python-headless nest_asyncio numpy arabic-reshaper python-bidi -q")
           os.system("sudo apt update -y && sudo apt install -y ffmpeg curl fonts-hosny-amiri")
 
-          # استدعاء المكتبات الخارجية بعد تثبيتها
+          # استدعاء المكتبات الخارجية بعد تثبيت المكتبات الجديدة
           import requests
           import cv2
           import numpy as np
           import edge_tts
           from deep_translator import GoogleTranslator
           from pytrends.request import TrendReq
+          from arabic_reshaper import reshape
+          from bidi.algorithm import get_display
 
           # --- الإعدادات الثابتة ---
           VOICE = "ar-KW-FahedNeural"
@@ -59,6 +61,12 @@ jobs:
           FONT_FILE = "Amiri-Regular.ttf"
 
           def log(msg): print(f"[LOG] {msg}")
+
+          # وظيفة لمعالجة النص العربي ليظهر بشكل صحيح
+          def fix_arabic(text):
+              if not text: return ""
+              reshaped_text = reshape(text)
+              return get_display(reshaped_text)
 
           if not os.path.exists(FONT_FILE):
               log("📥 جاري تحميل الخط...")
@@ -77,7 +85,7 @@ jobs:
               cv2.imwrite("temp_background.jpg", img)
               return "temp_background.jpg"
 
-          # --- صيد التريند (مع شرط فيديو واحد في اليوم) ---
+          # --- صيد التريند ---
           def get_filtered_trend():
               log("🚀 جاري صيد التريند الحالي...")
               pytrends = TrendReq(hl='ar', tz=0)
@@ -125,7 +133,7 @@ jobs:
                           words_timing.append({"text": chunk["text"], "start": start, "end": start + duration})
               return words_timing
 
-          # --- إنشاء ملف ASS ---
+          # --- إنشاء ملف ASS (تم تصحيح اتجاه النص هنا) ---
           def generate_ass(words_timing, dur, sentence):
               def format_time(seconds):
                   h = int(seconds // 3600)
@@ -142,7 +150,9 @@ jobs:
                   for i, w in enumerate(words):
                       words_timing.append({"text": w, "start": max(0.0, (i * time_per_word) - 0.40), "end": ((i + 1) * time_per_word) - 0.40})
 
-              all_words = [w['text'] for w in words_timing]
+              # معالجة النصوص برمجياً لتصحيح الاتجاه (RTL)
+              all_words_fixed = [fix_arabic(w['text']) for w in words_timing]
+              
               events = []
               current_time = 0.0
               for i, w in enumerate(words_timing):
@@ -156,15 +166,16 @@ jobs:
 
               for start, end, active_idx in events:
                   if start >= end: continue
-                  line_str = ""
-                  reversed_words = all_words[::-1]
-                  for idx, word_text in enumerate(reversed_words):
-                  orig_idx = len(all_words) - 1 - idx
-                  if orig_idx == active_idx:
-                  line_str += f"{{\\c&H00FFFF&}}{word_text}{{\\c&HFFFFFF&}} "
-                  else:
-                  line_str += f"{word_text} "
                   
+                  line_parts = []
+                  for idx, word_text in enumerate(all_words_fixed):
+                      if idx == active_idx:
+                          line_parts.append(f"{{\\c&H00FFFF&}}{word_text}{{\\c&HFFFFFF&}}")
+                      else:
+                          line_parts.append(word_text)
+                  
+                  # في العربية، يجب عكس ترتيب مصفوفة الكلمات لتظهر بشكل صحيح عند المحاذاة للوسط
+                  line_str = " ".join(line_parts[::-1])
                   ass_content += f"Dialogue: 0,{format_time(start)},{format_time(end)},Default,,0,0,0,,{line_str.strip()}\n"
               return ass_content
 
@@ -175,7 +186,7 @@ jobs:
                   if os.path.exists(p): shutil.rmtree(p)
                   os.makedirs(p, exist_ok=True)
 
-              hashtag_title = "" + "_".join(title.split())
+              hashtag_title = fix_arabic("_".join(title.split()))
               now = datetime.now()
               date_str = now.strftime("%Y/%m/%d")
               time_str = now.strftime("%I:%M %p").replace("AM", "").replace("PM", "")
@@ -207,12 +218,14 @@ jobs:
 
               bg_path = get_black_background()
 
+              # تصحيح النصوص الثابتة (فوق وتحت) للتأكد من توافقها
               safe_hashtag = hashtag_title.replace("'", "")
-              safe_title = title.replace("'", "")
+              safe_title_fixed = fix_arabic(title).replace("'", "")
+              watch_text_fixed = fix_arabic(f"شاهد {title}")
 
               draw_title = f"drawtext=fontfile={FONT_FILE}:text='{safe_hashtag}':fontcolor=white:fontsize=40:x=90:y=90:borderw=2:bordercolor=black"
               draw_site = f"drawtext=fontfile={FONT_FILE}:text='{MY_SITE}':fontcolor=yellow:fontsize=30:x=(w-text_w)/2:y=(h-70):borderw=2:bordercolor=black"
-              draw_watch = f"drawtext=fontfile={FONT_FILE}:text='شاهد {safe_title}':fontcolor=white:fontsize=30:x=(w-text_w)/2:y=(h-130):borderw=2:bordercolor=black"
+              draw_watch = f"drawtext=fontfile={FONT_FILE}:text='{watch_text_fixed}':fontcolor=white:fontsize=30:x=(w-text_w)/2:y=(h-130):borderw=2:bordercolor=black"
               static_filters = f"{draw_site},{draw_title},{draw_watch}"
 
               clip_files = []
@@ -258,7 +271,7 @@ jobs:
                   if os.path.exists("clips"): shutil.rmtree("clips")
 
           async def main():
-              delay = random.randint(30, 90)
+              delay = random.randint(1, 2)
               log(f"⏳ بدء الجلسة.. سيتم الانتظار لمدة {delay} ثانية قبل التنفيذ...")
               time.sleep(delay)
               
