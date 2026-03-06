@@ -265,7 +265,7 @@ jobs:
                   if os.path.exists("clips"): shutil.rmtree("clips")
 
           async def main():
-              delay = random.randint(30, 90)
+              delay = random.randint(1, 2)
               log(f"⏳ بدء الجلسة.. سيتم الانتظار لمدة {delay} ثانية قبل التنفيذ...")
               time.sleep(delay)
               
