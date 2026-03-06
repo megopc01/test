@@ -305,7 +305,7 @@ jobs:
                   if os.path.exists("clips"): shutil.rmtree("clips")
 
           async def main():
-              delay = random.randint(1, 2)
+              delay = random.randint(30, 90)
               log(f"⏳ بدء الجلسة.. سيتم الانتظار لمدة {delay} ثانية قبل التنفيذ...")
               time.sleep(delay)
               
@@ -333,5 +333,5 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           echo "تم إنشاء الفيديو وتحديث السجل. ستبدأ فترة الانتظار لـ 3 ساعات..."
-          sleep 10800
+          sleep 60
           gh workflow run "Perpetual Dual" --ref ${{ github.ref_name }}
