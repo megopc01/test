@@ -2,6 +2,8 @@ name: Perpetual Dual
 
 on:
   workflow_dispatch:
+  schedule:
+    - cron: '0 */3 * * *' # تشغيل تلقائي كل 3 ساعات
 
 concurrency:
   group: streaming-group
