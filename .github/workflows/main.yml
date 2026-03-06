@@ -33,14 +33,16 @@ jobs:
           python-version: '3.10'
 
       - name: 📜 Create and Run Script
+        env:
+          YOUTUBE_CREDENTIALS: ${{ secrets.YOUTUBE_CREDENTIALS }}
         run: |
           cat << 'EOF' > script.py
-          import os, shutil, asyncio, subprocess, random, sys, time
+          import os, shutil, asyncio, subprocess, random, sys, time, json
           from datetime import datetime
 
           # 1️⃣ التثبيت الإجباري للمتطلبات
           print("[LOG] 🛠️ تهيئة الترسانة وتثبيت المتطلبات...")
-          os.system("pip install -U requests edge-tts deep-translator pytrends opencv-python-headless nest_asyncio numpy -q")
+          os.system("pip install -U requests edge-tts deep-translator pytrends opencv-python-headless nest_asyncio numpy google-api-python-client google-auth-httplib2 google-auth-oauthlib -q")
           os.system("sudo apt update -y && sudo apt install -y ffmpeg curl fonts-hosny-amiri")
 
           # استدعاء المكتبات الخارجية بعد تثبيتها
@@ -50,6 +52,9 @@ jobs:
           import edge_tts
           from deep_translator import GoogleTranslator
           from pytrends.request import TrendReq
+          from google.oauth2.credentials import Credentials
+          from googleapiclient.discovery import build
+          from googleapiclient.http import MediaFileUpload
 
           # --- الإعدادات الثابتة ---
           VOICE = "ar-KW-FahedNeural"
@@ -222,7 +227,7 @@ jobs:
               safe_title = title.replace("'", "")
 
               draw_title = f"drawtext=fontfile={FONT_FILE}:text='{safe_hashtag}':fontcolor=white:fontsize=40:x=90:y=90:borderw=2:bordercolor=black"
-              draw_site = f"drawtext=fontfile={FONT_FILE}:text='{MY_SITE}':fontcolor=yellow:fontsize=30:x=(w-text_w)/2:y=(h-100):borderw=2:bordercolor=black"
+              draw_site = f"drawtext=fontfile={FONT_FILE}:text='{MY_SITE}':fontcolor=yellow:fontsize=30:x=(w-text_w)/2:y=(h-70):borderw=2:bordercolor=black"
               draw_watch = f"drawtext=fontfile={FONT_FILE}:text='شاهد {safe_title}':fontcolor=white:fontsize=30:x=(w-text_w)/2:y=(h-130):borderw=2:bordercolor=black"
               static_filters = f"{draw_site},{draw_title},{draw_watch}"
 
@@ -257,10 +262,42 @@ jobs:
               subprocess.run(f"ffmpeg -y -f concat -safe 0 -i list.txt -c:v copy {final_v}", shell=True)
 
               if os.path.exists(final_v):
-                  log("🚀 جاري الرفع...")
-                  with open(final_v, "rb") as f:
-                      url = requests.post("https://catbox.moe/user/api.php", data={"reqtype": "fileupload"}, files={"fileToUpload": f}).text
-                  print(f"\n✅ الرابط: {url}\n")
+                  # استخراج رقم الفيديو للتسلسل (1, 2, 3...) بناءً على سجل trends
+                  video_number = 1
+                  if os.path.exists(HISTORY_FILE):
+                      with open(HISTORY_FILE, "r", encoding="utf-8") as f:
+                          video_number = len(f.read().splitlines())
+                  
+                  video_title = f"{title} #{video_number}"
+                  log(f"🚀 جاري الرفع إلى يوتيوب باسم: {video_title} ...")
+                  
+                  try:
+                      creds_data = json.loads(os.environ['YOUTUBE_CREDENTIALS'])
+                      creds = Credentials.from_authorized_user_info(creds_data)
+                      youtube = build('youtube', 'v3', credentials=creds)
+
+                      body = {
+                          'snippet': {
+                              'title': video_title,
+                              'description': '', # الوصف فارغ كما طلبت
+                              'categoryId': '24' # الترفيه
+                          },
+                          'status': {
+                              'privacyStatus': 'public',
+                              'selfDeclaredMadeForKids': False
+                          }
+                      }
+
+                      media = MediaFileUpload(final_v, chunksize=-1, resumable=True)
+                      request = youtube.videos().insert(
+                          part=','.join(body.keys()),
+                          body=body,
+                          media_body=media
+                      )
+                      response = request.execute()
+                      log(f"✅ تم الرفع بنجاح! رابط الفيديو: https://www.youtube.com/watch?v={response['id']}")
+                  except Exception as e:
+                      log(f"❌ فشل الرفع إلى يوتيوب: {e}")
                   
                   os.remove(final_v)
                   os.remove("list.txt")
