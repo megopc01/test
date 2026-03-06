@@ -125,78 +125,66 @@ jobs:
                           words_timing.append({"text": chunk["text"], "start": start, "end": start + duration})
               return words_timing
 
-        # --- إنشاء ملف ASS (تم تصحيح اتجاه النص العربي) ---
-def generate_ass(words_timing, dur, sentence):
+          # --- إنشاء ملف ASS (تم تصحيح اتجاه النص العربي) ---
+          def generate_ass(words_timing, dur, sentence):
+              def format_time(seconds):
+                  h = int(seconds // 3600)
+                  m = int((seconds % 3600) // 60)
+                  s = int(seconds % 60)
+                  cs = int((seconds * 100) % 100)
+                  return f"{h}:{m:02d}:{s:02d}.{cs:02d}"
 
-    def format_time(seconds):
-        h = int(seconds // 3600)
-        m = int((seconds % 3600) // 60)
-        s = int(seconds % 60)
-        cs = int((seconds * 100) % 100)
-        return f"{h}:{m:02d}:{s:02d}.{cs:02d}"
+              ass_content = f"""[Script Info]
+          ScriptType: v4.00+
+          PlayResX: 1280
+          PlayResY: 720
 
-    ass_content = f"""[Script Info]
-ScriptType: v4.00+
-PlayResX: 1280
-PlayResY: 720
+          [V4+ Styles]
+          Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+          Style: Default,Amiri,120,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,1,0,0,0,100,100,0,0,1,4,0,5,10,10,10,1
 
-[V4+ Styles]
-Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Default,Amiri,120,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,1,0,0,0,100,100,0,0,1,4,0,5,10,10,10,1
+          [Events]
+          Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+          """
 
-[Events]
-Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
-"""
+              if not words_timing:
+                  words = sentence.split()
+                  time_per_word = dur / len(words) if words else dur
+                  for i, w in enumerate(words):
+                      words_timing.append({
+                          "text": w,
+                          "start": max(0.0, (i * time_per_word) - 0.40),
+                          "end": ((i + 1) * time_per_word) - 0.40
+                      })
 
-    # إذا لم يكن هناك توقيت للكلمات، نولده تلقائيًا
-    if not words_timing:
-        words = sentence.split()
-        time_per_word = dur / len(words) if words else dur
-        for i, w in enumerate(words):
-            words_timing.append({
-                "text": w,
-                "start": max(0.0, (i * time_per_word) - 0.40),
-                "end": ((i + 1) * time_per_word) - 0.40
-            })
+              all_words = [w['text'] for w in words_timing]
+              events = []
+              current_time = 0.0
 
-    all_words = [w['text'] for w in words_timing]
+              for i, w in enumerate(words_timing):
+                  start = w["start"]
+                  end = w["end"]
+                  if start > current_time:
+                      events.append((current_time, start, -1))
+                  events.append((start, end, i))
+                  current_time = end
 
-    events = []
-    current_time = 0.0
+              if current_time < dur:
+                  events.append((current_time, dur, -1))
 
-    for i, w in enumerate(words_timing):
-        start = w["start"]
-        end = w["end"]
-
-        if start > current_time:
-            events.append((current_time, start, -1))
-
-        events.append((start, end, i))
-        current_time = end
-
-    if current_time < dur:
-        events.append((current_time, dur, -1))
-
-    # معالجة كل حدث وترتيب الكلمات بشكل صحيح للغة العربية
-    for start, end, active_idx in events:
-
-        if start >= end:
-            continue
-
-        line_str = ""
-        # عكس ترتيب الكلمات لكن نحافظ على الكلمة النشطة
-        reversed_words = all_words[::-1]
-
-        for idx, word_text in enumerate(reversed_words):
-            orig_idx = len(all_words) - 1 - idx
-            if orig_idx == active_idx:
-                line_str += f"{{\\c&H00FFFF&}}{word_text}{{\\c&HFFFFFF&}} "
-            else:
-                line_str += f"{word_text} "
-
-        ass_content += f"Dialogue: 0,{format_time(start)},{format_time(end)},Default,,0,0,0,,{line_str.strip()}\n"
-
-    return ass_content
+              for start, end, active_idx in events:
+                  if start >= end:
+                      continue
+                  line_str = ""
+                  reversed_words = all_words[::-1]
+                  for idx, word_text in enumerate(reversed_words):
+                      orig_idx = len(all_words) - 1 - idx
+                      if orig_idx == active_idx:
+                          line_str += f"{{\\c&H00FFFF&}}{word_text}{{\\c&HFFFFFF&}} "
+                      else:
+                          line_str += f"{word_text} "
+                  ass_content += f"Dialogue: 0,{format_time(start)},{format_time(end)},Default,,0,0,0,,{line_str.strip()}\n"
+              return ass_content
 
           # --- صناعة الفيديو ---
           async def create_video(title):
@@ -236,7 +224,6 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
               ]
 
               bg_path = get_black_background()
-
               safe_hashtag = hashtag_title.replace("'", "")
               safe_title = title.replace("'", "")
 
