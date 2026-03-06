@@ -73,7 +73,7 @@ jobs:
           if not os.path.exists(f"fonts/{FONT_FILE}"):
               shutil.copy(FONT_FILE, f"fonts/{FONT_FILE}")
 
-          # دالة تهيئة النصوص العربية لتظهر بشكل صحيح (نقلت لتكون عامة)
+          # --- تهيئة النصوص العربية لتجنب تقطع الحروف أو ظهورها معكوسة ---
           def fix_ar(text):
               return get_display(arabic_reshaper.reshape(text))
 
@@ -140,7 +140,7 @@ jobs:
                   cs = int((seconds * 100) % 100)
                   return f"{h}:{m:02d}:{s:02d}.{cs:02d}"
 
-              ass_content = f"""[Script Info]\nScriptType: v4.00+\nPlayResX: 1280\nPlayResY: 720\n\n[V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\nStyle: Default,Amiri,120,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,1,0,0,0,100,100,0,0,1,4,0,5,10,10,10,1\n\n[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"""
+              ass_content = f"[Script Info]\nScriptType: v4.00+\nPlayResX: 1280\nPlayResY: 720\n\n[V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\nStyle: Default,Amiri,120,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,1,0,0,0,100,100,0,0,1,4,0,5,10,10,10,1\n\n[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
               
               if not words_timing:
                   words = sentence.split()
@@ -148,8 +148,7 @@ jobs:
                   for i, w in enumerate(words):
                       words_timing.append({"text": w, "start": max(0.0, (i * time_per_word) - 0.40), "end": ((i + 1) * time_per_word) - 0.40})
 
-              # معالجة الكلمات لتظهر بشكل صحيح مع قلب الترتيب الداخلي للجملة لتوافق الـ RTL
-              all_words = [fix_ar(w['text']) for w in words_timing]
+              all_words = [w['text'] for w in words_timing]
               events = []
               current_time = 0.0
               for i, w in enumerate(words_timing):
@@ -163,16 +162,20 @@ jobs:
 
               for start, end, active_idx in events:
                   if start >= end: continue
-                  line_str = ""
-                  # تركيب الجملة بشكل معكوس لتطابق القراءة العربية
-                  for idx in reversed(range(len(all_words))):
-                      word_text = all_words[idx]
-                      if idx == active_idx: 
-                          line_str += f"{{\\c&H00FFFF&}}{word_text}{{\\c&HFFFFFF&}} "
-                      else: 
-                          line_str += f"{word_text} "
                   
-                  ass_content += f"Dialogue: 0,{format_time(start)},{format_time(end)},Default,,0,0,0,,{line_str.strip()}\n"
+                  line_words = []
+                  for idx, word_text in enumerate(all_words):
+                      # إصلاح كل كلمة على حدة
+                      fixed_word = fix_ar(word_text)
+                      if idx == active_idx:
+                          line_words.append(f"{{\\c&H00FFFF&}}{fixed_word}{{\\c&HFFFFFF&}}")
+                      else:
+                          line_words.append(fixed_word)
+                  
+                  # 💡 هذا هو السحر: نعكس ترتيب قائمة الكلمات حتى يتم طباعتها بشكل صحيح في ملف الـ ASS من اليمين لليسار
+                  line_str = " ".join(reversed(line_words))
+                  
+                  ass_content += f"Dialogue: 0,{format_time(start)},{format_time(end)},Default,,0,0,0,,{line_str}\n"
               return ass_content
 
           # --- صناعة الفيديو ---
@@ -265,7 +268,7 @@ jobs:
                   if os.path.exists("clips"): shutil.rmtree("clips")
 
           async def main():
-              delay = random.randint(1, 2)
+              delay = random.randint(30, 90)
               log(f"⏳ بدء الجلسة.. سيتم الانتظار لمدة {delay} ثانية قبل التنفيذ...")
               time.sleep(delay)
               
