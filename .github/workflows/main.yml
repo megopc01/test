@@ -40,7 +40,7 @@ jobs:
 
           # 1️⃣ التثبيت الإجباري للمتطلبات
           print("[LOG] 🛠️ تهيئة الترسانة وتثبيت المتطلبات...")
-          os.system("pip install -U requests edge-tts deep-translator pytrends opencv-python-headless nest_asyncio numpy arabic-reshaper python-bidi -q")
+          os.system("pip install -U requests edge-tts deep-translator pytrends opencv-python-headless nest_asyncio numpy -q")
           os.system("sudo apt update -y && sudo apt install -y ffmpeg curl fonts-hosny-amiri")
 
           # استدعاء المكتبات الخارجية بعد تثبيتها
@@ -50,8 +50,6 @@ jobs:
           import edge_tts
           from deep_translator import GoogleTranslator
           from pytrends.request import TrendReq
-          import arabic_reshaper
-          from bidi.algorithm import get_display
 
           # --- الإعدادات الثابتة ---
           VOICE = "ar-KW-FahedNeural"
@@ -72,10 +70,6 @@ jobs:
           os.makedirs("fonts", exist_ok=True)
           if not os.path.exists(f"fonts/{FONT_FILE}"):
               shutil.copy(FONT_FILE, f"fonts/{FONT_FILE}")
-
-          # --- تهيئة النصوص العربية لتجنب تقطع الحروف أو ظهورها معكوسة ---
-          def fix_ar(text):
-              return get_display(arabic_reshaper.reshape(text))
 
           # --- توليد خلفية سوداء ---
           def get_black_background():
@@ -140,7 +134,7 @@ jobs:
                   cs = int((seconds * 100) % 100)
                   return f"{h}:{m:02d}:{s:02d}.{cs:02d}"
 
-              ass_content = f"[Script Info]\nScriptType: v4.00+\nPlayResX: 1280\nPlayResY: 720\n\n[V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\nStyle: Default,Amiri,120,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,1,0,0,0,100,100,0,0,1,4,0,5,10,10,10,1\n\n[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
+              ass_content = f"""[Script Info]\nScriptType: v4.00+\nPlayResX: 1280\nPlayResY: 720\n\n[V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\nStyle: Default,Amiri,120,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,1,0,0,0,100,100,0,0,1,4,0,5,10,10,10,1\n\n[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"""
               
               if not words_timing:
                   words = sentence.split()
@@ -162,20 +156,12 @@ jobs:
 
               for start, end, active_idx in events:
                   if start >= end: continue
-                  
-                  line_words = []
+                  line_str = ""
                   for idx, word_text in enumerate(all_words):
-                      # إصلاح كل كلمة على حدة
-                      fixed_word = fix_ar(word_text)
-                      if idx == active_idx:
-                          line_words.append(f"{{\\c&H00FFFF&}}{fixed_word}{{\\c&HFFFFFF&}}")
-                      else:
-                          line_words.append(fixed_word)
+                      if idx == active_idx: line_str += f"{{\\c&H00FFFF&}}{word_text}{{\\c&HFFFFFF&}} "
+                      else: line_str += f"{word_text} "
                   
-                  # 💡 هذا هو السحر: نعكس ترتيب قائمة الكلمات حتى يتم طباعتها بشكل صحيح في ملف الـ ASS من اليمين لليسار
-                  line_str = " ".join(reversed(line_words))
-                  
-                  ass_content += f"Dialogue: 0,{format_time(start)},{format_time(end)},Default,,0,0,0,,{line_str}\n"
+                  ass_content += f"Dialogue: 0,{format_time(start)},{format_time(end)},Default,,0,0,0,,{line_str.strip()}\n"
               return ass_content
 
           # --- صناعة الفيديو ---
@@ -217,12 +203,12 @@ jobs:
 
               bg_path = get_black_background()
 
-              safe_hashtag = fix_ar(hashtag_title.replace("'", ""))
-              watch_text = fix_ar("شاهد " + title.replace("'", ""))
+              safe_hashtag = hashtag_title.replace("'", "")
+              safe_title = title.replace("'", "")
 
               draw_title = f"drawtext=fontfile={FONT_FILE}:text='{safe_hashtag}':fontcolor=white:fontsize=40:x=90:y=90:borderw=2:bordercolor=black"
               draw_site = f"drawtext=fontfile={FONT_FILE}:text='{MY_SITE}':fontcolor=yellow:fontsize=30:x=(w-text_w)/2:y=(h-70):borderw=2:bordercolor=black"
-              draw_watch = f"drawtext=fontfile={FONT_FILE}:text='{watch_text}':fontcolor=white:fontsize=30:x=(w-text_w)/2:y=(h-130):borderw=2:bordercolor=black"
+              draw_watch = f"drawtext=fontfile={FONT_FILE}:text='شاهد {safe_title}':fontcolor=white:fontsize=30:x=(w-text_w)/2:y=(h-130):borderw=2:bordercolor=black"
               static_filters = f"{draw_site},{draw_title},{draw_watch}"
 
               clip_files = []
@@ -268,7 +254,7 @@ jobs:
                   if os.path.exists("clips"): shutil.rmtree("clips")
 
           async def main():
-              delay = random.randint(30, 90)
+              delay = random.randint(1, 2)
               log(f"⏳ بدء الجلسة.. سيتم الانتظار لمدة {delay} ثانية قبل التنفيذ...")
               time.sleep(delay)
               
