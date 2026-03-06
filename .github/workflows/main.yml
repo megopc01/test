@@ -62,6 +62,12 @@ jobs:
 
           def log(msg): print(f"[LOG] {msg}")
 
+          # دالة إصلاح النصوص العربية (Visual Rendering)
+          def fix_ar(text):
+              if not text: return ""
+              reshaped_text = arabic_reshaper.reshape(text)
+              return get_display(reshaped_text)
+
           if not os.path.exists(FONT_FILE):
               log("📥 جاري تحميل الخط...")
               subprocess.run(f"curl -L -o {FONT_FILE} https://github.com/google/fonts/raw/main/ofl/amiri/Amiri-Regular.ttf", shell=True)
@@ -79,7 +85,7 @@ jobs:
               cv2.imwrite("temp_background.jpg", img)
               return "temp_background.jpg"
 
-          # --- صيد التريند (مع شرط فيديو واحد في اليوم) ---
+          # --- صيد التريند ---
           def get_filtered_trend():
               log("🚀 جاري صيد التريند الحالي...")
               pytrends = TrendReq(hl='ar', tz=0)
@@ -127,7 +133,7 @@ jobs:
                           words_timing.append({"text": chunk["text"], "start": start, "end": start + duration})
               return words_timing
 
-          # --- إنشاء ملف ASS ---
+          # --- إنشاء ملف ASS (تم التعديل لضبط النصوص العربية) ---
           def generate_ass(words_timing, dur, sentence):
               def format_time(seconds):
                   h = int(seconds // 3600)
@@ -144,7 +150,9 @@ jobs:
                   for i, w in enumerate(words):
                       words_timing.append({"text": w, "start": max(0.0, (i * time_per_word) - 0.40), "end": ((i + 1) * time_per_word) - 0.40})
 
-              all_words = [w['text'] for w in words_timing]
+              # نقوم بمعالجة كل كلمة برمجياً لتجنب الانعكاس
+              all_words_raw = [w['text'] for w in words_timing]
+              
               events = []
               current_time = 0.0
               for i, w in enumerate(words_timing):
@@ -158,12 +166,27 @@ jobs:
 
               for start, end, active_idx in events:
                   if start >= end: continue
-                  line_str = ""
-                  for idx, word_text in enumerate(all_words):
-                      if idx == active_idx: line_str += f"{{\\c&H00FFFF&}}{word_text}{{\\c&HFFFFFF&}} "
-                      else: line_str += f"{word_text} "
                   
-                  ass_content += f"Dialogue: 0,{format_time(start)},{format_time(end)},Default,,0,0,0,,{line_str.strip()}\n"
+                  # معالجة السطر بالكامل ككتلة واحدة للحفاظ على ترتيب الكلمات
+                  # ثم تحديد الكلمة النشطة بالألوان
+                  processed_words = []
+                  for idx, word_text in enumerate(all_words_raw):
+                      if idx == active_idx:
+                          # تلوين الكلمة النشطة بالأصفر
+                          processed_words.append(f"{{\\c&H00FFFF&}}{word_text}{{\\c&HFFFFFF&}}")
+                      else:
+                          processed_words.append(word_text)
+                  
+                  # دمج الكلمات ثم تمرير السطر بالكامل لدالة fix_ar
+                  full_line_raw = " ".join(processed_words)
+                  # ملاحظة: fix_ar تتعامل مع الـ tags الخاصة بـ ASS بشكل محدود، 
+                  # لذا نطبق الإصلاح على الكلمات مع الحفاظ على الترتيب المرئي
+                  
+                  visual_line = fix_ar(" ".join(all_words_raw)) # للسطر العادي
+                  # لبناء سطر الكاريوكي، نصلح كل كلمة ونجمعها عكسياً لأن العربية RTL
+                  styled_line = " ".join([fix_ar(w) if "{" not in w else f"{{\\c&H00FFFF&}}{fix_ar(w.split('}')[1].split('{')[0])}{{\\c&HFFFFFF&}}" for w in processed_words][::-1])
+
+                  ass_content += f"Dialogue: 0,{format_time(start)},{format_time(end)},Default,,0,0,0,,{styled_line}\n"
               return ass_content
 
           # --- صناعة الفيديو ---
@@ -173,10 +196,10 @@ jobs:
                   if os.path.exists(p): shutil.rmtree(p)
                   os.makedirs(p, exist_ok=True)
 
-              hashtag_title = "" + "_".join(title.split())
+              hashtag_title = "#" + "_".join(title.split())
               now = datetime.now()
               date_str = now.strftime("%Y/%m/%d")
-              time_str = now.strftime("%I:%M %p").replace("AM", "").replace("PM", "")
+              time_str = now.strftime("%I:%M %p").replace("AM", "صباحاً").replace("PM", "مساءً")
               time_announcement = f"تم تسجيل هذا الفيديو في تاريخ {date_str} الساعة {time_str}"
 
               all_sentences = [
@@ -205,15 +228,12 @@ jobs:
 
               bg_path = get_black_background()
 
-              # إضافة دالة لتهيئة النصوص العربية لمنع ظهورها معكوسة أو مقطعة في المنتصف
-              def fix_ar(text):
-                  return get_display(arabic_reshaper.reshape(text))
-
-              safe_hashtag = fix_ar(hashtag_title.replace("'", ""))
-              watch_text = fix_ar("شاهد " + title.replace("'", ""))
+              safe_hashtag = fix_ar(hashtag_title)
+              watch_text = fix_ar("شاهد " + title)
+              site_display = MY_SITE # المواقع لا تحتاج لقلب الحروف
 
               draw_title = f"drawtext=fontfile={FONT_FILE}:text='{safe_hashtag}':fontcolor=white:fontsize=40:x=90:y=90:borderw=2:bordercolor=black"
-              draw_site = f"drawtext=fontfile={FONT_FILE}:text='{MY_SITE}':fontcolor=yellow:fontsize=30:x=(w-text_w)/2:y=(h-70):borderw=2:bordercolor=black"
+              draw_site = f"drawtext=fontfile={FONT_FILE}:text='{site_display}':fontcolor=yellow:fontsize=30:x=(w-text_w)/2:y=(h-70):borderw=2:bordercolor=black"
               draw_watch = f"drawtext=fontfile={FONT_FILE}:text='{watch_text}':fontcolor=white:fontsize=30:x=(w-text_w)/2:y=(h-130):borderw=2:bordercolor=black"
               static_filters = f"{draw_site},{draw_title},{draw_watch}"
 
@@ -256,12 +276,11 @@ jobs:
                   os.remove(final_v)
                   os.remove("list.txt")
                   os.remove("temp_background.jpg")
-                  if os.path.exists("temp_subtitle.txt"): os.remove("temp_subtitle.txt")
                   if os.path.exists("clips"): shutil.rmtree("clips")
 
           async def main():
               delay = random.randint(30, 90)
-              log(f"⏳ بدء الجلسة.. سيتم الانتظار لمدة {delay} ثانية قبل التنفيذ...")
+              log(f"⏳ بدء الجلسة.. سيتم الانتظار لمدة {delay} ثانية...")
               time.sleep(delay)
               
               title = get_filtered_trend()
@@ -287,6 +306,6 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          echo "تم إنشاء الفيديو وتحديث السجل. ستبدأ فترة الانتظار لـ 3 ساعات (10800 ثانية)..."
+          echo "تمت العملية بنجاح. الانتظار لـ 3 ساعات..."
           sleep 10800
           gh workflow run "Perpetual Dual" --ref ${{ github.ref_name }}
