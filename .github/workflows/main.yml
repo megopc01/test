@@ -568,4 +568,4 @@ jobs:
         run: |
           echo "تم إنشاء الفيديو وتحديث السجل. ستبدأ فترة الانتظار لـ 3 ساعات (10800 ثانية)..."
           sleep 10800
-          gh workflow run "Perpetual Dual"
+          gh workflow run "main"
