@@ -1,5 +1,7 @@
 name: Perpetual Dual
 
+on:
+
 concurrency:
   group: streaming-group
   cancel-in-progress: true
