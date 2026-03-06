@@ -77,7 +77,7 @@ jobs:
               cv2.imwrite("temp_background.jpg", img)
               return "temp_background.jpg"
 
-          # --- صيد التريند (مع شرط فيديو واحد في اليوم) ---
+          # --- صيد التريند ---
           def get_filtered_trend():
               log("🚀 جاري صيد التريند الحالي...")
               pytrends = TrendReq(hl='ar', tz=0)
@@ -125,7 +125,7 @@ jobs:
                           words_timing.append({"text": chunk["text"], "start": start, "end": start + duration})
               return words_timing
 
-          # --- إنشاء ملف ASS ---
+          # --- إنشاء ملف ASS (إصلاح مشكلة التلوين والترتيب) ---
           def generate_ass(words_timing, dur, sentence):
               def format_time(seconds):
                   h = int(seconds // 3600)
@@ -134,7 +134,8 @@ jobs:
                   cs = int((seconds * 100) % 100)
                   return f"{h}:{m:02d}:{s:02d}.{cs:02d}"
 
-              ass_content = f"""[Script Info]\nScriptType: v4.00+\nPlayResX: 1280\nPlayResY: 720\n\n[V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\nStyle: Default,Amiri,120,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,1,0,0,0,100,100,0,0,1,4,0,5,10,10,10,1\n\n[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"""
+              # تم ضبط Alignment إلى 2 (أسفل المنتصف) لضمان أفضل عرض للغة العربية
+              ass_content = f"""[Script Info]\nScriptType: v4.00+\nPlayResX: 1280\nPlayResY: 720\n\n[V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\nStyle: Default,Amiri,120,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,1,0,0,0,100,100,0,0,1,4,0,2,10,10,10,1\n\n[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"""
               
               if not words_timing:
                   words = sentence.split()
@@ -156,16 +157,16 @@ jobs:
 
               for start, end, active_idx in events:
                   if start >= end: continue
-                  line_str = ""
-                  # الحل: عكس ترتيب الكلمات برمجياً لمعالجة مشكلة الاتجاه في ASS
-                  reversed_words = all_words[::-1]
-                  for idx, word_text in enumerate(reversed_words):
-                      # تحديد الاندكس الحقيقي للكلمة في المصفوفة الأصلية بعد العكس
-                      orig_idx = len(all_words) - 1 - idx
-                      if orig_idx == active_idx: line_str += f"{{\\c&H00FFFF&}}{word_text}{{\\c&HFFFFFF&}} "
-                      else: line_str += f"{word_text} "
+                  line_parts = []
+                  for idx, word_text in enumerate(all_words):
+                      if idx == active_idx:
+                          line_parts.append(f"{{\\c&H00FFFF&}}{word_text}{{\\c&HFFFFFF&}}")
+                      else:
+                          line_parts.append(word_text)
                   
-                  ass_content += f"Dialogue: 0,{format_time(start)},{format_time(end)},Default,,0,0,0,,{line_str.strip()}\n"
+                  # استخدام \u200f لإجبار المحرك على القراءة من اليمين لليسار بشكل طبيعي
+                  line_str = "\u200f" + " ".join(line_parts)
+                  ass_content += f"Dialogue: 0,{format_time(start)},{format_time(end)},Default,,0,0,0,,{line_str}\n"
               return ass_content
 
           # --- صناعة الفيديو ---
