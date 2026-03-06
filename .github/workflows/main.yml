@@ -1,7 +1,13 @@
-name: Video Production Stream
+name: Perpetual Dual
 
 on:
   workflow_dispatch:
+  schedule:
+    - cron: '0 */3 * * *' # تشغيل تلقائي كل 3 ساعات
+
+concurrency:
+  group: streaming-group
+  cancel-in-progress: true
 
 jobs:
   stream:
@@ -11,8 +17,7 @@ jobs:
       contents: write
 
     steps:
-      - name: 🔍 Checkout Repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
       - name: 🧹 Delete Old Logs
         uses: Mattraks/delete-workflow-runs@v2
@@ -22,144 +27,275 @@ jobs:
           retain_days: 0
           keep_minimum_runs: 1
 
-      - name: 🛠️ Install System Dependencies
-        run: |
-          sudo apt update -y
-          sudo apt install -y ffmpeg curl fonts-hosny-amiri
-          pip install -U edge-tts deep-translator pytrends opencv-python-headless nest_asyncio requests numpy
+      - name: ⚙️ Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
 
-      - name: 🚀 Run Video Production Script
+      - name: 📝 Create and Run Script
         run: |
-          python -c "
-          import os, shutil, asyncio, subprocess, requests, random, sys, cv2, time
+          cat << 'EOF' > main.py
+          import os
+          import shutil, asyncio, subprocess, requests, random, sys, time
+          import cv2
           import numpy as np
           from datetime import datetime
+
+          print("[LOG] 🛠️ تهيئة الترسانة وتثبيت المتطلبات...")
+          os.system("pip install -U edge-tts deep-translator pytrends opencv-python-headless nest_asyncio -q")
+          os.system("sudo apt update -y && sudo apt install -y ffmpeg curl fonts-hosny-amiri")
+
           import edge_tts
+          from deep_translator import GoogleTranslator
           from pytrends.request import TrendReq
 
-          # --- إعدادات ---
-          VOICE = 'ar-KW-FahedNeural'
-          MY_SITE = 'www.mshort.do.am'
-          HISTORY_FILE = 'history.txt'
-          FONT_FILE = 'Amiri-Regular.ttf'
+          VOICE = "ar-KW-FahedNeural"
+          MY_SITE = "www.mshort.do.am"
+          HISTORY_FILE = "history.txt"
+          TARGET_FPS = 25
+          FONT_FILE = "Amiri-Regular.ttf"
 
-          def log(msg): print(f'[LOG] {msg}')
+          PRE_TEXT = ""
 
-          # 1. الانتظار العشوائي (30-90 ثانية)
-          wait_time = random.randint(30, 90)
-          log(f'⏳ انتظار {wait_time} ثانية قبل البدء...')
-          time.sleep(wait_time)
+          def log(msg): print(f"[LOG] {msg}")
+
+          def manual_wrap(text, limit=999):
+              return text
 
           if not os.path.exists(FONT_FILE):
-              subprocess.run(f'curl -L -o {FONT_FILE} https://github.com/google/fonts/raw/main/ofl/amiri/Amiri-Regular.ttf', shell=True)
-          os.makedirs('fonts', exist_ok=True)
-          shutil.copy(FONT_FILE, 'fonts/' + FONT_FILE)
+              log("📥 جاري تحميل الخط...")
+              subprocess.run(f"curl -L -o {FONT_FILE} https://github.com/google/fonts/raw/main/ofl/amiri/Amiri-Regular.ttf", shell=True)
 
-          async def create_audio_and_timing(text, audio_path):
+          if not os.path.exists(FONT_FILE):
+              raise Exception("❌ فشل تحميل الخط")
+
+          os.makedirs("fonts", exist_ok=True)
+          if not os.path.exists(f"fonts/{FONT_FILE}"):
+              shutil.copy(FONT_FILE, f"fonts/{FONT_FILE}")
+
+          def get_black_background():
+              img = np.zeros((720, 1280, 3), np.uint8)
+              cv2.imwrite("temp_background.jpg", img)
+              return "temp_background.jpg"
+
+          def get_filtered_trend():
+              log("🚀 جاري صيد التريند الحالي...")
+              pytrends = TrendReq(hl='ar', tz=0)
+              excluded_words = ["ديزني", "افلام", "فيلم", "فلم","هندى", "هندي", "صينى", "صيني","تركى", "تركي", "الحلقه", "الحلقة",  "كوري", "الذئاب", "باكستاني", "افلام", "حلقه", "حلقة","ديزنى"]
+              
+              today_date = datetime.now().strftime("%Y-%m-%d")
+              
+              try:
+                  pytrends.build_payload(["مدبلج"], timeframe='now 4-H', gprop='youtube')
+                  results = pytrends.related_queries()
+                  used_today = []
+                  
+                  if os.path.exists(HISTORY_FILE):
+                      with open(HISTORY_FILE, "r", encoding="utf-8") as f:
+                          for line in f.read().splitlines():
+                              if line.startswith(today_date + "::"):
+                                  used_today.append(line.split("::")[1])
+                  
+                  if 'مدبلج' in results and results['مدبلج']['top'] is not None:
+                      df_top = results['مدبلج']['top']
+                      new_titles = [w for w in df_top['query'].tolist() if "مدبلج" in w and len(w) >= 15 and w not in used_today and not any(word in w for word in excluded_words)]
+                      
+                      if new_titles:
+                          q = new_titles[0]
+                          with open(HISTORY_FILE, "a", encoding="utf-8") as f: 
+                              f.write(f"{today_date}::{q}\n")
+                          return q
+                  log("⚠️ لا توجد تريندات جديدة.")
+                  return None
+              except Exception as e:
+                  log(f"⚠️ خطأ: {e}")
+                  return None
+
+          async def create_audio_and_get_timing(text, audio_path):
               communicate = edge_tts.Communicate(text, VOICE)
               words_timing = []
-              with open(audio_path, 'wb') as f:
+              with open(audio_path, "wb") as f:
                   async for chunk in communicate.stream():
-                      if chunk['type'] == 'audio': f.write(chunk['data'])
-                      elif chunk['type'] == 'WordBoundary':
-                          raw_start = chunk['offset'] / 10000000.0
-                          start = max(0.0, raw_start - 0.40) # سرعة التلوين 0.40
-                          words_timing.append({'text': chunk['text'], 'start': start, 'end': start + (chunk['duration'] / 10000000.0)})
+                      if chunk["type"] == "audio":
+                          f.write(chunk["data"])
+                      elif chunk["type"] == "WordBoundary":
+                          raw_start = chunk["offset"] / 10000000.0
+                          start = max(0.0, raw_start - 0.40)
+                          duration = chunk["duration"] / 10000000.0
+                          words_timing.append({"text": chunk["text"], "start": start, "end": start + duration})
               return words_timing
 
           def generate_ass(words_timing, dur, sentence):
-              def fmt(s): return f'{int(s//3600)}:{int((s%3600)//60):02d}:{int(s%60):02d}.{int((s*100)%100):02d}'
-              ass = f'[Script Info]\nScriptType: v4.00+\nPlayResX: 1280\nPlayResY: 720\n\n[V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\nStyle: Default,Amiri,120,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,1,0,0,0,100,100,0,0,1,4,0,5,10,10,10,1\n\n[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n'
+              def format_time(seconds):
+                  h = int(seconds // 3600)
+                  m = int((seconds % 3600) // 60)
+                  s = int(seconds % 60)
+                  cs = int((seconds * 100) % 100)
+                  return f"{h}:{m:02d}:{s:02d}.{cs:02d}"
+
+              ass_content = f"""[Script Info]
+          ScriptType: v4.00+
+          PlayResX: 1280
+          PlayResY: 720
+
+          [V4+ Styles]
+          Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+          Style: Default,Amiri,120,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,1,0,0,0,100,100,0,0,1,4,0,5,10,10,10,1
+
+          [Events]
+          Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+          """
+              
+              if not words_timing:
+                  words = sentence.split()
+                  time_per_word = dur / len(words) if words else dur
+                  for i, w in enumerate(words):
+                      words_timing.append({
+                          "text": w,
+                          "start": max(0.0, (i * time_per_word) - 0.40),
+                          "end": ((i + 1) * time_per_word) - 0.40
+                      })
+
               all_words = [w['text'] for w in words_timing]
-              curr = 0.0
-              evs = []
+              
+              events = []
+              current_time = 0.0
               for i, w in enumerate(words_timing):
-                  if w['start'] > curr: evs.append((curr, w['start'], -1))
-                  evs.append((w['start'], w['end'], i))
-                  curr = w['end']
-              if curr < dur: evs.append((curr, dur, -1))
-              for s, e, idx in evs:
-                  if s >= e: continue
-                  line = ' '.join([f'{{\\\\c&H00FFFF&}}{w}{{\\\\c&HFFFFFF&}}' if i == idx else w for i, w in enumerate(all_words)])
-                  ass += f'Dialogue: 0,{fmt(s)},{fmt(e)},Default,,0,0,0,,{line}\n'
-              return ass
-
-          async def run():
-              log('🚀 صيد التريند...')
-              py = TrendReq(hl='ar')
-              try:
-                  py.build_payload(['مدبلج'], timeframe='now 4-H', gprop='youtube')
-                  df = py.related_queries()['مدبلج']['top']
-                  titles = [w for w in df['query'].tolist() if len(w) >= 15]
-              except: titles = []
-
-              today = datetime.now().strftime('%Y-%m-%d')
-              used = []
-              if os.path.exists(HISTORY_FILE):
-                  with open(HISTORY_FILE, 'r', encoding='utf-8') as f: used = f.read().splitlines()
+                  start = w["start"]
+                  end = w["end"]
+                  if start > current_time:
+                      events.append((current_time, start, -1))
+                  events.append((start, end, i))
+                  current_time = end
               
-              target_title = None
-              for t in titles:
-                  record = f'{today}|{t}'
-                  if record not in used:
-                      target_title = t
-                      with open(HISTORY_FILE, 'a', encoding='utf-8') as f: f.write(record + '\n')
-                      break
-              
-              if not target_title:
-                  log('⚠️ لا يوجد عنوان جديد لليوم.')
-                  return
+              if current_time < dur:
+                  events.append((current_time, dur, -1))
 
+              for start, end, active_idx in events:
+                  if start >= end: continue
+                  line_str = ""
+                  for idx, word_text in enumerate(all_words):
+                      if idx == active_idx:
+                          line_str += f"{{\\c&H00FFFF&}}{word_text}{{\\c&HFFFFFF&}} "
+                      else:
+                          line_str += f"{word_text} "
+                  
+                  ass_content += f"Dialogue: 0,{format_time(start)},{format_time(end)},Default,,0,0,0,,{line_str.strip()}\n"
+                  
+              return ass_content
+
+          async def create_video(title):
+              log(f"🎬 بدء إنتاج الفيديو لـ: {title}")
+              for p in ["frames", "clips"]:
+                  if os.path.exists(p): shutil.rmtree(p)
+                  os.makedirs(p, exist_ok=True)
+
+              hashtag_title = "" + "_".join(title.split())
+              
               now = datetime.now()
-              date_str = now.strftime(\"%Y/%m/%d\")
-              time_str = now.strftime(\"%I:%M\")
-              announcement = f'تم تسجيل هذا الفيديو في تاريخ {date_str} الساعة {time_str}'
-              
-              all_s = [
-                  'أهلاً ومرحباً بكل متابعينا الأعزاء', 
-                  'موضوع الفيديو اليوم عن المسلسل الشهير وهو', 
-                  target_title, 
-                  'لمشاهدة المسلسل كاملاً وبجودة عالية ومدبلجة', 
-                  'فابقوا معنا حتى نهاية الفيديو', 
-                  'سأضع رابط التيلجرام لكل أجزاء المسلسل', 
-                  'أو قم بزيارة موقعنا الموضح باللون الأصفر', 
-                  announcement, 
-                  'آراكم في فيديو آخر'
+              date_str = now.strftime("%Y/%m/%d")
+              time_str = now.strftime("%I:%M %p").replace("AM", "").replace("PM", "")
+              time_announcement = f"تم تسجيل هذا الفيديو في تاريخ {date_str} الساعة {time_str}"
+
+              all_sentences = [
+                  "أهلاً ومرحباً بكل متابعينا الأعزاء",
+                  "موضوع الفيديو اليوم عن المسلسل الشهير وهو",
+                  f"{title}",
+                  "لمشاهدة المسلسل كاملاً وبجودة عالية ومدبلجة",
+                  "فابقَ معنا حتى نهاية الفيديو",
+                  "سأضع رابط التيلجرام لكل الأجزاء",
+                  "أو قم بزيارة موقعنا الموضح باللون الأصفر",
+                  "الدراما القصيرة وجهة المشاهدين المفضلة حالياً",
+                  f"إليك أفضل المنصات لمتابعة {title}",
+                  "ReelShort: محتوى رومانسي جذاب",
+                  "DramaBox: واجهة سهلة وبسيطة",
+                  "GoodShort: جودة إنتاجية عالية",
+                  "MoboReels: متخصصة في المحتوى العمودي",
+                  "FlexTV: تدعم لغات متعددة عالمياً",
+                  "TopShort: حلقات قصيرة جداً ومثيرة",
+                  "اختيار المنصة الصحيحة يضمن تجربة ممتازة",
+                  f"استعرضنا أفضل الطرق لمتابعة {title}",
+                  "أي منصة ستختار اليوم لمشاهدة مسلسلك المفضل؟",
+                  "استمتع بمشاهدة ممتعة عبر موقعنا الأصفر",
+                  time_announcement,
+                  "آراكم في فيديو آخر"
               ]
-              
-              img = np.zeros((720, 1280, 3), np.uint8)
-              cv2.imwrite('bg.jpg', img)
-              
-              clips = []
-              os.makedirs('clips', exist_ok=True)
-              for i, txt in enumerate(all_s):
-                  ap = f'clips/a_{i}.mp3'
-                  wt = await create_audio_and_timing(txt, ap)
-                  dur = float(subprocess.check_output(f'ffprobe -i {ap} -show_entries format=duration -v quiet -of csv=\"p=0\"', shell=True))
-                  ass_p = f'clips/s_{i}.ass'
-                  with open(ass_p, 'w', encoding='utf-8') as f: f.write(generate_ass(wt, dur, txt))
-                  cp = f'clips/c_{i}.mp4'
-                  draw_site = f\"drawtext=fontfile={FONT_FILE}:text='{MY_SITE}':fontcolor=yellow:fontsize=30:x=(w-text_w)/2:y=(h-70):borderw=2:bordercolor=black\"
-                  cmd = f'ffmpeg -y -loop 1 -i bg.jpg -i {ap} -vf \"{draw_site},subtitles={ass_p}:fontsdir=fonts\" -c:v libx264 -t {dur} -pix_fmt yuv420p {cp}'
-                  subprocess.run(cmd, shell=True)
-                  clips.append(cp)
 
-              with open('list.txt', 'w') as f:
-                  for c in clips: f.write(f\"file '{c}'\\n\")
-              subprocess.run('ffmpeg -y -f concat -safe 0 -i list.txt -c copy output.mp4', shell=True)
+              bg_path = get_black_background()
+
+              draw_title = f"drawtext=fontfile={FONT_FILE}:text='{hashtag_title.replace('\'', '')}':fontcolor=white:fontsize=40:x=90:y=90:borderw=2:bordercolor=black"
+              draw_site = f"drawtext=fontfile={FONT_FILE}:text='{MY_SITE}':fontcolor=yellow:fontsize=30:x=(w-text_w)/2:y=(h-70):borderw=2:bordercolor=black"
+              draw_watch = f"drawtext=fontfile={FONT_FILE}:text='شاهد {title.replace('\'', '')}':fontcolor=white:fontsize=30:x=(w-text_w)/2:y=(h-130):borderw=2:bordercolor=black"
+              static_filters = f"{draw_site},{draw_title},{draw_watch}"
+
+              clip_files = []
+
+              for i, sentence in enumerate(all_sentences):
+                  log(f"📝 معالجة الجملة {i+1}/{len(all_sentences)}: {sentence}")
+                  audio_p = f"clips/audio_{i}.mp3"
+                  
+                  words_timing = await create_audio_and_get_timing(sentence, audio_p)
+                  
+                  res = subprocess.run(f'ffprobe -i {audio_p} -show_entries format=duration -v quiet -of csv="p=0"', shell=True, capture_output=True, text=True)
+                  try:
+                      dur = float(res.stdout.strip())
+                  except:
+                      dur = 2.0
+                  
+                  ass_p = f"clips/sub_{i}.ass"
+                  ass_content = generate_ass(words_timing, dur, sentence)
+                  with open(ass_p, "w", encoding="utf-8") as f:
+                      f.write(ass_content)
+                      
+                  ass_filter_path = ass_p.replace('\\', '/')
+                  draw_subtitle = f"subtitles={ass_filter_path}:fontsdir=fonts"
+                  
+                  c_p = f"clips/clip_{i}.mp4"
+                  ffmpeg_cmd = f'''ffmpeg -y -loop 1 -i {bg_path} -i {audio_p} -vf "{static_filters},{draw_subtitle}" -c:v libx264 -preset ultrafast -tune stillimage -threads 0 -t {dur} -r {TARGET_FPS} -pix_fmt yuv420p -c:a aac -b:a 192k -shortest {c_p}'''
+                  
+                  subprocess.run(ffmpeg_cmd, shell=True, capture_output=True)
+                  clip_files.append(c_p)
+
+              with open("list.txt", "w", encoding="utf-8") as f:
+                  for clip in clip_files: f.write(f"file '{clip}'\n")
               
-              if os.path.exists('output.mp4'):
-                  with open('output.mp4', 'rb') as f:
-                      r = requests.post('https://catbox.moe/user/api.php', data={'reqtype': 'fileupload'}, files={'fileToUpload': f}).text
-                      log(f'✅ الرابط: {r}')
+              final_v = "output.mp4"
+              subprocess.run(f"ffmpeg -y -f concat -safe 0 -i list.txt -c:v copy {final_v}", shell=True)
 
-          asyncio.run(run())
-          "
+              if os.path.exists(final_v):
+                  log("🚀 جاري الرفع...")
+                  with open(final_v, "rb") as f:
+                      url = requests.post("https://catbox.moe/user/api.php", data={"reqtype": "fileupload"}, files={"fileToUpload": f}).text
+                  print(f"\n✅ الرابط: {url}\n")
+                  
+                  os.remove(final_v)
+                  os.remove("list.txt")
+                  os.remove("temp_background.jpg")
+                  if os.path.exists("temp_subtitle.txt"):
+                      os.remove("temp_subtitle.txt")
+                  if os.path.exists("clips"):
+                      shutil.rmtree("clips")
 
-      - name: 💾 Save History
+          async def main():
+              title = get_filtered_trend()
+              if title:
+                  wait_time = random.randint(30, 90)
+                  log(f"⏳ التريند جاهز. انتظار لمدة {wait_time} ثانية قبل بدء الإنتاج...")
+                  time.sleep(wait_time)
+                  await create_video(title)
+
+          if __name__ == "__main__":
+              if "ipykernel" in sys.modules:
+                  import nest_asyncio
+                  nest_asyncio.apply()
+              asyncio.run(main())
+          EOF
+          python3 main.py
+
+      - name: 💾 حفظ السجل (تحديث سجل التريندات اليومية)
         run: |
-          git config --local user.email "action@github.com"
-          git config --local user.name "GitHub Action"
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
           git add history.txt
-          git commit -m "Update history [skip ci]" || echo "No changes to commit"
+          git commit -m "📝 تحديث ملف history.txt بعناوين اليوم" || exit 0
           git push
