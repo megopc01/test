@@ -157,8 +157,12 @@ jobs:
               for start, end, active_idx in events:
                   if start >= end: continue
                   line_str = ""
-                  for idx, word_text in enumerate(all_words):
-                      if idx == active_idx: line_str += f"{{\\c&H00FFFF&}}{word_text}{{\\c&HFFFFFF&}} "
+                  # الحل: عكس ترتيب الكلمات برمجياً لمعالجة مشكلة الاتجاه في ASS
+                  reversed_words = all_words[::-1]
+                  for idx, word_text in enumerate(reversed_words):
+                      # تحديد الاندكس الحقيقي للكلمة في المصفوفة الأصلية بعد العكس
+                      orig_idx = len(all_words) - 1 - idx
+                      if orig_idx == active_idx: line_str += f"{{\\c&H00FFFF&}}{word_text}{{\\c&HFFFFFF&}} "
                       else: line_str += f"{word_text} "
                   
                   ass_content += f"Dialogue: 0,{format_time(start)},{format_time(end)},Default,,0,0,0,,{line_str.strip()}\n"
