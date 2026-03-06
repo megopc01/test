@@ -227,7 +227,7 @@ jobs:
               safe_title = title.replace("'", "")
 
               draw_title = f"drawtext=fontfile={FONT_FILE}:text='{safe_hashtag}':fontcolor=white:fontsize=40:x=90:y=90:borderw=2:bordercolor=black"
-              draw_site = f"drawtext=fontfile={FONT_FILE}:text='{MY_SITE}':fontcolor=yellow:fontsize=80:x=(w-text_w)/2:y=(h-80):borderw=2:bordercolor=black"
+              draw_site = f"drawtext=fontfile={FONT_FILE}:text='{MY_SITE}':fontcolor=yellow:fontsize=80:x=(w-text_w)/2:y=(h-50):borderw=2:bordercolor=black"
               draw_watch = f"drawtext=fontfile={FONT_FILE}:text='شاهد {safe_title} من موقعنا':fontcolor=white:fontsize=70:x=(w-text_w)/2:y=(h-130):borderw=2:bordercolor=black"
               static_filters = f"{draw_site},{draw_title},{draw_watch}"
 
