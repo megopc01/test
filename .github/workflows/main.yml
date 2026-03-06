@@ -1,10 +1,5 @@
 name: Perpetual Dual
 
-on:
-  workflow_dispatch:
-  schedule:
-    - cron: '0 */3 * * *' # تشغيل تلقائي كل 3 ساعات
-
 concurrency:
   group: streaming-group
   cancel-in-progress: true
@@ -223,9 +218,13 @@ jobs:
 
               bg_path = get_black_background()
 
-              draw_title = f"drawtext=fontfile={FONT_FILE}:text='{hashtag_title.replace('\'', '')}':fontcolor=white:fontsize=40:x=90:y=90:borderw=2:bordercolor=black"
+              # تم حل مشكلة علامات الاقتباس بتمرير نصوص نظيفة
+              safe_hashtag = hashtag_title.replace("'", "")
+              safe_title = title.replace("'", "")
+
+              draw_title = f"drawtext=fontfile={FONT_FILE}:text='{safe_hashtag}':fontcolor=white:fontsize=40:x=90:y=90:borderw=2:bordercolor=black"
               draw_site = f"drawtext=fontfile={FONT_FILE}:text='{MY_SITE}':fontcolor=yellow:fontsize=30:x=(w-text_w)/2:y=(h-70):borderw=2:bordercolor=black"
-              draw_watch = f"drawtext=fontfile={FONT_FILE}:text='شاهد {title.replace('\'', '')}':fontcolor=white:fontsize=30:x=(w-text_w)/2:y=(h-130):borderw=2:bordercolor=black"
+              draw_watch = f"drawtext=fontfile={FONT_FILE}:text='شاهد {safe_title}':fontcolor=white:fontsize=30:x=(w-text_w)/2:y=(h-130):borderw=2:bordercolor=black"
               static_filters = f"{draw_site},{draw_title},{draw_watch}"
 
               clip_files = []
