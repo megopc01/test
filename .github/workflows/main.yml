@@ -40,7 +40,7 @@ jobs:
 
           # 1️⃣ التثبيت الإجباري للمتطلبات
           print("[LOG] 🛠️ تهيئة الترسانة وتثبيت المتطلبات...")
-          os.system("pip install -U requests edge-tts deep-translator pytrends opencv-python-headless nest_asyncio numpy -q")
+          os.system("pip install -U requests edge-tts deep-translator pytrends opencv-python-headless nest_asyncio numpy arabic-reshaper python-bidi -q")
           os.system("sudo apt update -y && sudo apt install -y ffmpeg curl fonts-hosny-amiri")
 
           # استدعاء المكتبات الخارجية بعد تثبيتها
@@ -50,6 +50,8 @@ jobs:
           import edge_tts
           from deep_translator import GoogleTranslator
           from pytrends.request import TrendReq
+          import arabic_reshaper
+          from bidi.algorithm import get_display
 
           # --- الإعدادات الثابتة ---
           VOICE = "ar-KW-FahedNeural"
@@ -203,12 +205,16 @@ jobs:
 
               bg_path = get_black_background()
 
-              safe_hashtag = hashtag_title.replace("'", "")
-              safe_title = title.replace("'", "")
+              # إضافة دالة لتهيئة النصوص العربية لمنع ظهورها معكوسة أو مقطعة في المنتصف
+              def fix_ar(text):
+                  return get_display(arabic_reshaper.reshape(text))
+
+              safe_hashtag = fix_ar(hashtag_title.replace("'", ""))
+              watch_text = fix_ar("شاهد " + title.replace("'", ""))
 
               draw_title = f"drawtext=fontfile={FONT_FILE}:text='{safe_hashtag}':fontcolor=white:fontsize=40:x=90:y=90:borderw=2:bordercolor=black"
               draw_site = f"drawtext=fontfile={FONT_FILE}:text='{MY_SITE}':fontcolor=yellow:fontsize=30:x=(w-text_w)/2:y=(h-70):borderw=2:bordercolor=black"
-              draw_watch = f"drawtext=fontfile={FONT_FILE}:text='شاهد {safe_title}':fontcolor=white:fontsize=30:x=(w-text_w)/2:y=(h-130):borderw=2:bordercolor=black"
+              draw_watch = f"drawtext=fontfile={FONT_FILE}:text='{watch_text}':fontcolor=white:fontsize=30:x=(w-text_w)/2:y=(h-130):borderw=2:bordercolor=black"
               static_filters = f"{draw_site},{draw_title},{draw_watch}"
 
               clip_files = []
