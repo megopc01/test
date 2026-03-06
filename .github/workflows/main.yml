@@ -333,5 +333,5 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           echo "تم إنشاء الفيديو وتحديث السجل. ستبدأ فترة الانتظار لـ 3 ساعات..."
-          sleep 60
+          sleep 10800
           gh workflow run "Perpetual Dual" --ref ${{ github.ref_name }}
