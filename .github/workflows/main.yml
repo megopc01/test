@@ -32,57 +32,71 @@ jobs:
         with:
           python-version: '3.10'
 
+      - name: 📦 Install Dependencies
+        run: |
+          pip install pytrends huggingface_hub moviepy tqdm requests nest_asyncio pillow edge-tts google-auth google-auth-oauthlib google-auth-httplib2 google-api-python-client
+
       - name: 📜 Create and Run Script
         env:
           YOUTUBE_CREDENTIALS: ${{ secrets.YOUTUBE_CREDENTIALS }}
+          HF_TOKENS: ${{ secrets.HF_TOKENS }}
         run: |
           cat << 'EOF' > script.py
-          import os, shutil, asyncio, subprocess, random, sys, time, json
+          import os, shutil, requests, asyncio, nest_asyncio, re, time, random, sys, json
           from datetime import datetime
-
-          # 1️⃣ التثبيت الإجباري للمتطلبات
-          print("[LOG] 🛠️ تهيئة الترسانة وتثبيت المتطلبات...")
-          os.system("pip install -U requests edge-tts deep-translator pytrends opencv-python-headless nest_asyncio numpy google-api-python-client google-auth-httplib2 google-auth-oauthlib -q")
-          os.system("sudo apt update -y && sudo apt install -y ffmpeg curl fonts-hosny-amiri")
-
-          # استدعاء المكتبات الخارجية بعد تثبيتها
-          import requests
-          import cv2
-          import numpy as np
-          import edge_tts
-          from deep_translator import GoogleTranslator
           from pytrends.request import TrendReq
+          from moviepy.editor import ImageClip, AudioFileClip, concatenate_videoclips
+          from huggingface_hub import InferenceClient
+          from edge_tts import Communicate
           from google.oauth2.credentials import Credentials
           from googleapiclient.discovery import build
           from googleapiclient.http import MediaFileUpload
 
-          # --- الإعدادات الثابتة ---
-          VOICE = "ar-KW-FahedNeural"
-          MY_SITE = "www.mshort.do.am"
+          nest_asyncio.apply()
+
           HISTORY_FILE = "history.txt"
-          TARGET_FPS = 25
-          FONT_FILE = "Amiri-Regular.ttf"
+          NUM_SENTENCES = 40
+          WIDTH, HEIGHT = 1280, 720
+          FPS = 24
+          FINAL_VIDEO = "output.mp4"
 
-          def log(msg): print(f"[LOG] {msg}")
+          def log(msg):
+              print(msg)
 
-          if not os.path.exists(FONT_FILE):
-              log("📥 جاري تحميل الخط...")
-              subprocess.run(f"curl -L -o {FONT_FILE} https://github.com/google/fonts/raw/main/ofl/amiri/Amiri-Regular.ttf", shell=True)
+          # ==========================================
+          # --- 1. التجهيز البرمجي ---
+          # ==========================================
+          def setup_environment():
+              for f in ["images", "audio"]:
+                  if os.path.exists(f): shutil.rmtree(f)
+                  os.makedirs(f, exist_ok=True)
+              log("🚀 [READY] بيئة العمل جاهزة.")
 
-          if not os.path.exists(FONT_FILE):
-              raise Exception("❌ فشل تحميل الخط")
+          # ==========================================
+          # --- 2. إعدادات التوكنات ---
+          # ==========================================
+          hf_env = os.environ.get('HF_TOKENS', '')
+          HF_TOKENS = [t.strip() for t in hf_env.split(',') if t.strip()]
 
-          os.makedirs("fonts", exist_ok=True)
-          if not os.path.exists(f"fonts/{FONT_FILE}"):
-              shutil.copy(FONT_FILE, f"fonts/{FONT_FILE}")
+          if not HF_TOKENS:
+              log("❌ [ERROR] لم يتم العثور على التوكنات! يرجى إضافة HF_TOKENS في أسرار المستودع (Secrets).")
+              sys.exit(1)
 
-          # --- توليد خلفية سوداء ---
-          def get_black_background():
-              img = np.zeros((720, 1280, 3), np.uint8)
-              cv2.imwrite("temp_background.jpg", img)
-              return "temp_background.jpg"
+          current_token_idx = 0
+          client = InferenceClient(token=HF_TOKENS[current_token_idx])
 
-          # --- صيد التريند (مع شرط فيديو واحد في اليوم) ---
+          def switch_token(is_error=False):
+              global current_token_idx, client
+              current_token_idx = (current_token_idx + 1) % len(HF_TOKENS)
+              if is_error:
+                  log(f"⚠️ [ERROR] حدث خطأ أو توقف! جاري التبديل فوراً إلى التوكن رقم {current_token_idx + 1}...")
+              else:
+                  log(f"🔄 [AUTO-SWITCH] تبديل تلقائي لتوزيع الضغط إلى التوكن رقم {current_token_idx + 1}...")
+              client = InferenceClient(token=HF_TOKENS[current_token_idx])
+
+          # ==========================================
+          # --- 3. صيد التريند ---
+          # ==========================================
           def get_filtered_trend():
               log("🚀 جاري صيد التريند الحالي...")
               pytrends = TrendReq(hl='ar', tz=0)
@@ -115,194 +129,170 @@ jobs:
                   log(f"⚠️ خطأ: {e}")
                   return None
 
-          # --- إنشاء الصوت واستخراج توقيت الكلمات ---
-          async def create_audio_and_get_timing(text, audio_path):
-              communicate = edge_tts.Communicate(text, VOICE)
-              words_timing = []
-              with open(audio_path, "wb") as f:
-                  async for chunk in communicate.stream():
-                      if chunk["type"] == "audio":
-                          f.write(chunk["data"])
-                      elif chunk["type"] == "WordBoundary":
-                          raw_start = chunk["offset"] / 10000000.0
-                          start = max(0.0, raw_start - 0.40)
-                          duration = chunk["duration"] / 10000000.0
-                          words_timing.append({"text": chunk["text"], "start": start, "end": start + duration})
-              return words_timing
+          # ==========================================
+          # --- 4. التأليف والتوليد ---
+          # ==========================================
+          def clean_arabic_text(text):
+              text = re.sub(r'[^\u0600-\u06FF\s]', '', text)
+              return " ".join(text.split()).strip() + "."
 
-          # --- إنشاء ملف ASS (عرض الكلمة الحالية فقط بحجم كبير) ---
-          def generate_ass(words_timing, dur, sentence):
-              def format_time(seconds):
-                  h = int(seconds // 3600)
-                  m = int((seconds % 3600) // 60)
-                  s = int(seconds % 60)
-                  cs = int((seconds * 100) % 100)
-                  return f"{h}:{m:02d}:{s:02d}.{cs:02d}"
-
-              # تم رفع Fontsize إلى 250
-              ass_content = f"""[Script Info]
-          ScriptType: v4.00+
-          PlayResX: 1280
-          PlayResY: 720
-
-          [V4+ Styles]
-          Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-          Style: Default,Amiri,250,&H00FFFFFF,&H0000FFFF,&H00000000,&H00000000,1,0,0,0,100,100,0,0,1,6,0,5,10,10,10,1
-
-          [Events]
-          Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
-          """
-
-              if not words_timing:
-                  words = sentence.split()
-                  time_per_word = dur / len(words) if words else dur
-                  for i, w in enumerate(words):
-                      words_timing.append({
-                          "text": w,
-                          "start": max(0.0, (i * time_per_word) - 0.40),
-                          "end": ((i + 1) * time_per_word) - 0.40
-                      })
-
-              events = []
-              current_time = 0.0
-              for i, w in enumerate(words_timing):
-                  start = w["start"]
-                  end = w["end"]
-                  if start > current_time:
-                      events.append((current_time, start, -1))
-                  events.append((start, end, i))
-                  current_time = end
-
-              if current_time < dur:
-                  events.append((current_time, dur, -1))
-
-              for start, end, active_idx in events:
-                  if start >= end: continue
-                  
-                  # عرض الكلمة الحالية فقط
-                  line_str = words_timing[active_idx]["text"] if active_idx != -1 else ""
-                  
-                  ass_content += f"Dialogue: 0,{format_time(start)},{format_time(end)},Default,,0,0,0,,{line_str}\n"
-              return ass_content
-
-          # --- صناعة الفيديو ---
-          async def create_video(title):
-              log(f"🎬 بدء إنتاج الفيديو لـ: {title}")
-              for p in ["frames", "clips"]:
-                  if os.path.exists(p): shutil.rmtree(p)
-                  os.makedirs(p, exist_ok=True)
-
-              hashtag_title = "" + "_".join(title.split())
-              now = datetime.now()
-              date_str = now.strftime("%Y/%m/%d")
-              time_str = now.strftime("%I:%M %p").replace("AM", "").replace("PM", "")
-              time_announcement = f"تم تسجيل هذا الفيديو في تاريخ {date_str} الساعة {time_str}"
-
-              all_sentences = [
-             "أهلاً ومرحباً بكل متابعينا الأعزاء، سعداء جدًا بأن تكونوا معنا اليوم في هذا الفيديو الطويل والمميز الذي خصصناه لكم لنتحدث فيه عن كل ما يتعلق بمشاهدة المسلسلات الحديثة والمحبوبة، حيث سنأخذكم خطوة خطوة في رحلة ممتعة تبدأ من التعرف على المسلسل نفسه، مرورًا بكيفية متابعة جميع الحلقات بجودة عالية، وصولًا إلى استعراض أفضل المواقع والمنصات التي يمكنكم الاعتماد عليها لمتابعة كل جديد بسهولة، مع نصائح عملية وتجارب مفيدة ستجعل تجربتكم ممتعة ومريحة دون أي مشاكل أو عراقيل، لذا تأكدوا من متابعة كل لحظة معنا لتستفيدوا بالكامل من كل ما سنقدمه في هذا الفيديو الطويل والشامل.",
-                "موضوع الفيديو اليوم عن المسلسل الشهير والمثير الذي حاز على إعجاب ملايين المشاهدين في مختلف أنحاء العالم، والذي استطاع أن يجذب اهتمام الجماهير بفضل قصة مشوقة وأحداث درامية ممتعة مليئة بالتقلبات المثيرة، ويتميز المسلسل أيضًا بتقديم شخصيات متقنة التفاصيل وأداء تمثيلي مذهل جعل منه تجربة مشاهدة لا تُنسى على الإطلاق، لذا سنتناول في هذا الفيديو جميع الجوانب المتعلقة به، من بداية القصة، مرورًا بتحليل الشخصيات، وصولًا إلى كيفية متابعة الحلقات كاملة بأفضل جودة، وكذلك استعراض المنصات المميزة التي توفر تجربة مشاهدة سلسة ومثالية.",
-                f"{title}",
-                "لمشاهدة المسلسل كاملاً وبجودة عالية ومدبلجة أو مترجمة حسب رغبتكم، نقدم لكم في هذا الفيديو شرحًا تفصيليًا لكل الوسائل المتاحة لمتابعة جميع الحلقات بسهولة وراحة تامة، سواء عبر المنصات الرسمية أو الروابط الموثوقة، مع توضيح الفرق بين كل طريقة وكيفية الاستفادة القصوى من تجربة المشاهدة، مع نصائح حول كيفية اختيار الجودة المناسبة حسب سرعة الإنترنت والجهاز المستخدم، بحيث يكون المشاهد في نهاية المطاف قادرًا على مشاهدة المسلسل بكل سلاسة وراحة دون أي انقطاع أو مشاكل تقنية.",
-                "فابقَ معنا حتى نهاية الفيديو لأننا سنستعرض جميع التفاصيل التي يحتاجها المشاهد المحترف، بدءًا من روابط التحميل والمشاهدة المباشرة، مرورًا بكيفية التعامل مع واجهات المواقع المختلفة، وصولًا إلى نصائح ومعلومات مهمة ستجعلكم تختارون المنصة الأنسب لكم حسب احتياجاتكم، ولن يقتصر الأمر على مجرد مشاهدة المسلسل بل سنتعرف أيضًا على طرق اكتشاف الحلقات الجديدة والأحداث الإضافية ومحتوى ما بعد الحلقة الذي قد لا يعرفه الكثير من المشاهدين، مما يجعل الفيديو مصدرًا شاملاً لكل التفاصيل المتعلقة بالمسلسل.",
-                "سأضع رابط التليجرام لكل الأجزاء، بحيث يمكنكم الوصول إلى جميع الحلقات بسهولة كبيرة، مع تنظيم محكم يتيح لكم اختيار أي حلقة ترغبون بمشاهدتها دون الحاجة للبحث الطويل، كما أن الرابط يوفر مزايا إضافية مثل التعليقات من المشاهدين الآخرين، إمكانية تحميل الحلقات بجودة مختلفة، ومتابعة التحديثات فور صدورها، مما يجعل تجربة التليجرام خيارًا ممتازًا لمن يريد متابعة المسلسل بشكل منتظم ومن دون أي انقطاع.",
-                "أو قم بزيارة موقعنا الموضح باللون الأصفر، والذي صممناه بعناية لتقديم تجربة مشاهدة ممتعة ومريحة، مع واجهة مستخدم سهلة وبسيطة تتيح التنقل بين الحلقات بسهولة، وإمكانية التبديل بين النسخة العربية والنسخ الأصلية المدبلجة، كما أن الموقع يدعم خيارات الجودة المختلفة لتناسب سرعة الإنترنت لديك، بالإضافة إلى أنه يضم قسمًا خاصًا للتوصيات بحيث يمكنك اكتشاف مسلسلات جديدة مشابهة لما تحب، مما يجعله وجهة متكاملة لكل عشاق الدراما والبرامج التلفزيونية.",
-                "الدراما القصيرة اليوم أصبحت وجهة المشاهدين المفضلة بشكل ملحوظ، خصوصًا لأولئك الذين يبحثون عن محتوى سريع ومكثف يمكنهم متابعته في دقائق قليلة دون الحاجة لالتزام ساعات طويلة أمام الشاشة، وهي توفر أحداثًا مشوقة وشخصيات جذابة تترك أثرًا كبيرًا لدى المشاهد، كما أنها تتيح للمنصات تقديم محتوى متنوع بشكل أسرع وأحدث، لذلك إذا كنتم من محبي الدراما القصيرة، فسوف تجدون في هذه الفيديوهات فرصة رائعة للاستمتاع بقصص ممتعة ومؤثرة في وقت قليل، مع الحفاظ على مستوى عالي من الجودة الفنية والإنتاجية.",
-                f"إليك أفضل المنصات لمتابعة {title}، حيث سنقدم لكل منصة شرحًا تفصيليًا لمميزاتها وكيفية الاستفادة منها بأفضل شكل ممكن، بما يشمل سهولة الاستخدام، سرعة التحميل، جودة الصورة والصوت، الترجمة أو الدبلجة، خيارات البحث والتنقل بين الحلقات، وكذلك أي مزايا إضافية تجعل تجربة المشاهدة ممتعة ومتكاملة، بحيث يمكنك اختيار المنصة التي تناسب أسلوب حياتك وسرعة الإنترنت لديك، مع تجنب أي مشاكل تقنية قد تواجهك أثناء المتابعة.",
-                "ReelShort: تقدم محتوى رومانسي جذاب ومتنوع، مع حلقات قصيرة لكنها مليئة بالإثارة والعاطفة، وتتيح للمشاهدين فرصة متابعة قصص حب مشوقة في دقائق قليلة، كما أن المنصة تهتم بالتحديث المستمر وتقديم حلقات جديدة بشكل منتظم، مع واجهة مستخدم سهلة وبسيطة تتيح الانتقال بين الحلقات دون أي تعقيد، بالإضافة إلى دعمها للعديد من الأجهزة المختلفة سواء كانت هواتف ذكية أو أجهزة لوحية أو حواسيب، مما يجعلها خيارًا ممتازًا لمتابعي الدراما الرومانسية القصيرة.",
-                "DramaBox: تتميز بواجهة سهلة وبسيطة تجعل تجربة المشاهدة سلسة للغاية، مع تصميم مرتب يتيح الوصول إلى الحلقات بسرعة، وتوفر المنصة خيارات متعددة لتحديد الجودة المناسبة حسب سرعة الإنترنت لديك، كما تحتوي على تصنيفات واضحة للمسلسلات والبرامج، مما يساعد المشاهد على اكتشاف محتوى جديد بسهولة، إلى جانب دعم التعليقات والتقييمات من المستخدمين، وهو ما يضيف بعدًا اجتماعيًا لتجربة المشاهدة ويجعلها أكثر تفاعلية ومتعة.",
-                "GoodShort: تضمن جودة إنتاجية عالية في جميع حلقاتها، حيث تركز المنصة على تقديم محتوى بصري وصوتي ممتاز يرضي جميع المشاهدين، مع تقنيات تحسين الصورة والصوت التي تجعل المشاهدة تجربة سينمائية حقيقية، كما أن GoodShort تقدم محتوى متنوع يشمل الدراما، الرومانسية، الإثارة، والكوميديا، مع تحديثات دورية للحلقات الجديدة والمواسم القادمة، مما يضمن للمشاهد متابعة مستمرة وتجربة مشاهدة متكاملة بدون أي مشاكل في الجودة.",
-                "MoboReels: متخصصة في المحتوى العمودي، وهو الشكل المثالي لمشاهدة المسلسلات على الهواتف الذكية، حيث توفر المنصة تجربة مشاهدة مصممة خصيصًا للشاشات الصغيرة مع تركيز على التفاصيل واللقطات المهمة، بالإضافة إلى دعم التفاعلات السريعة مثل التعليقات والإعجابات والمشاركة مع الأصدقاء، مما يجعل تجربة المشاهدة أكثر حيوية ومتعة، كما توفر MoboReels خيارات تحميل للحلقات بحيث يمكن للمشاهدين الاستمتاع بالمحتوى في أي وقت دون الحاجة للاتصال بالإنترنت.",
-                "FlexTV: تدعم لغات متعددة عالميًا، ما يجعلها خيارًا ممتازًا للمشاهدين حول العالم الذين يفضلون متابعة المسلسلات بلغاتهم المفضلة، مع إمكانية التبديل بين الترجمة والدبلجة بسهولة، كما تقدم المنصة محتوى متنوع ومحدث باستمرار، مع واجهة مستخدم احترافية تدعم جميع الأجهزة، وخيارات لتحديد جودة الصورة والصوت بما يناسب سرعة الإنترنت لديك، بالإضافة إلى ميزة قائمة المفضلة التي تتيح للمشاهد حفظ الحلقات والمسلسلات التي يرغب بمشاهدتها لاحقًا بسهولة وسلاسة.",
-                "TopShort: تقدم حلقات قصيرة جدًا ومثيرة، وهي مثالية لمن يبحث عن مشاهدة سريعة مليئة بالإثارة والتشويق، مع محتوى منظم ومقسم حسب الأنواع لتسهيل العثور على ما تبحث عنه، كما تهتم المنصة بتقديم تحديثات مستمرة بحيث يجد المشاهد دائمًا محتوى جديد وممتع، إضافة إلى إمكانية التفاعل مع المحتوى عبر التعليقات والإعجابات، مع دعم كامل للأجهزة المحمولة والكمبيوتر، مما يجعل تجربة المشاهدة مرنة ومناسبة لجميع الاحتياجات.",
-                "اختيار المنصة الصحيحة يضمن تجربة ممتازة، حيث أن لكل منصة مزاياها الخاصة، وبالتالي من المهم معرفة ما تبحث عنه من تجربة مشاهدة سواء كانت جودة عالية، سهولة استخدام، محتوى جديد، أو دعم للغات مختلفة، ومعرفة هذه التفاصيل مسبقًا يوفر عليك الوقت والجهد، ويجعل مشاهدة المسلسل تجربة ممتعة ومتكاملة دون أي انقطاع أو مشاكل تقنية، مما يضمن لك الاستمتاع بكل حلقة من البداية إلى النهاية.",
-                f"استعرضنا أفضل الطرق لمتابعة {title} بكل تفصيل ووضوح، مع عرض جميع المنصات المتاحة ومميزاتها وطرق الوصول إليها، مما يجعل لديك الآن جميع المعلومات التي تحتاجها لاختيار الطريقة المثلى لمتابعة المسلسل والاستمتاع بكل أحداثه دون أي عقبات، سواء كنت تفضل المشاهدة على الهاتف، الجهاز اللوحي، أو الكمبيوتر، أو حتى عبر التلفاز الذكي، فقد حرصنا على تقديم شرح شامل يغطي كل هذه الخيارات.",
-                "أي منصة ستختار اليوم لمشاهدة مسلسلك المفضل؟ هل ستتجه إلى الروابط المباشرة عبر التليجرام، أم ستعتمد على المواقع والمنصات الرسمية التي تقدم جودة عالية وتجربة مستخدم ممتازة؟ القرار لك، لكن بعد مشاهدة هذا الفيديو الطويل والشامل ستكون لديك القدرة على الاختيار الصحيح وفقًا لاحتياجاتك وما يناسب أسلوب حياتك، مع العلم أن كل منصة قدمناها هنا موثوقة وآمنة للاستخدام.",
-                "استمتع بمشاهدة ممتعة عبر موقعنا الأصفر، حيث نقدم لك تجربة مشاهدة متكاملة مع واجهة سهلة الاستخدام، دعم لجميع الأجهزة، خيارات جودة متنوعة، ومحتوى محدث باستمرار، مما يجعل مشاهدة المسلسل تجربة رائعة وممتعة، مع إمكانية اكتشاف مسلسلات جديدة مشابهة لما تحب، والاستمتاع بمحتوى عالي الجودة في كل مرة تقوم فيها بالزيارة.",
-                time_announcement,
-                "آراكم في فيديو آخر قريبًا، نتمنى أن تكونوا قد استفدتم من الشرح المفصل والشامل، وأن تكون تجربة المشاهدة الخاصة بكم ممتعة ومليئة بالإثارة والتشويق، ونعدكم بأن نواصل تقديم أفضل المحتوى والأدلة الإرشادية لكل ما يتعلق بعالم المسلسلات والدراما الحديثة لتستمتعوا بكل جديد دون أي عناء."
-                        ]
-
-              bg_path = get_black_background()
-              safe_hashtag = hashtag_title.replace("'", "")
-              safe_title = title.replace("'", "")
-
-              draw_title = f"drawtext=fontfile={FONT_FILE}:text='{safe_hashtag}':fontcolor=white:fontsize=40:x=90:y=90:borderw=2:bordercolor=black"
-              draw_site = f"drawtext=fontfile={FONT_FILE}:text='{MY_SITE}':fontcolor=yellow:fontsize=70:x=(w-text_w)/2:y=(h-150):borderw=2:bordercolor=black"
-              draw_watch = f"drawtext=fontfile={FONT_FILE}:text='شاهد {safe_title} من موقعنا':fontcolor=white:fontsize=60:x=(w-text_w)/2:y=(h-110):borderw=2:bordercolor=black"
-              static_filters = f"{draw_site},{draw_title},{draw_watch}"
-
-              clip_files = []
-
-              for i, sentence in enumerate(all_sentences):
-                  log(f"📝 معالجة الجملة {i+1}/{len(all_sentences)}: {sentence}")
-                  audio_p = f"clips/audio_{i}.mp3"
-                  
-                  words_timing = await create_audio_and_get_timing(sentence, audio_p)
-                  res = subprocess.run(f'ffprobe -i {audio_p} -show_entries format=duration -v quiet -of csv="p=0"', shell=True, capture_output=True, text=True)
-                  try: dur = float(res.stdout.strip())
-                  except: dur = 2.0
-                  
-                  ass_p = f"clips/sub_{i}.ass"
-                  ass_content = generate_ass(words_timing, dur, sentence)
-                  with open(ass_p, "w", encoding="utf-8") as f: f.write(ass_content)
-                      
-                  ass_filter_path = ass_p.replace('\\', '/')
-                  draw_subtitle = f"subtitles={ass_filter_path}:fontsdir=fonts"
-                  
-                  c_p = f"clips/clip_{i}.mp4"
-                  ffmpeg_cmd = f'''ffmpeg -y -loop 1 -i {bg_path} -i {audio_p} -vf "{static_filters},{draw_subtitle}" -c:v libx264 -preset ultrafast -tune stillimage -threads 0 -t {dur} -r {TARGET_FPS} -pix_fmt yuv420p -c:a aac -b:a 192k -shortest {c_p}'''
-                  
-                  subprocess.run(ffmpeg_cmd, shell=True, capture_output=True)
-                  clip_files.append(c_p)
-
-              with open("list.txt", "w", encoding="utf-8") as f:
-                  for clip in clip_files: f.write(f"file '{clip}'\n")
+          def generate_connected_story(topic, count):
+              log(f"📝 [TEXT] جاري تأليف السيناريو عن: {topic}...")
+              sys_prompt = (
+                  f"Write a {count}-part cohesive, continuously flowing story about '{topic}'. "
+                  f"The narrative MUST be seamlessly connected, reading like one continuous unified paragraph, not isolated sentences. "
+                  f"Arabic: 50-100 words per part, flowing logically from the previous part without breaking the story, NO punctuation inside, one period at end. "
+                  f"English: Detailed 4k cinematic prompt matching the Arabic part. "
+                  f"Format: S[N]: [Arabic] P[N]: [English]"
+              )
               
-              final_v = "output.mp4"
-              subprocess.run(f"ffmpeg -y -f concat -safe 0 -i list.txt -c:v copy {final_v}", shell=True)
-
-              if os.path.exists(final_v):
-                  # استخراج رقم الفيديو للتسلسل (1, 2, 3...) بناءً على سجل trends
-                  video_number = 1
-                  if os.path.exists(HISTORY_FILE):
-                      with open(HISTORY_FILE, "r", encoding="utf-8") as f:
-                          video_number = len(f.read().splitlines())
-                  
-                  video_title = f"{title} #{video_number}"
-                  log(f"🚀 جاري الرفع إلى يوتيوب باسم: {video_title} ...")
-                  
+              attempts = 0
+              max_attempts = len(HF_TOKENS) * 2
+              switch_token(is_error=False)
+              
+              while attempts < max_attempts:
                   try:
-                      creds_data = json.loads(os.environ['YOUTUBE_CREDENTIALS'])
-                      creds = Credentials.from_authorized_user_info(creds_data)
-                      youtube = build('youtube', 'v3', credentials=creds)
-
-                      body = {
-                          'snippet': {
-                              'title': video_title,
-                              'description': '', # الوصف فارغ كما طلبت
-                              'categoryId': '24' # الترفيه
-                          },
-                          'status': {
-                              'privacyStatus': 'public',
-                              'selfDeclaredMadeForKids': False
-                          }
-                      }
-
-                      media = MediaFileUpload(final_v, chunksize=-1, resumable=True)
-                      request = youtube.videos().insert(
-                          part=','.join(body.keys()),
-                          body=body,
-                          media_body=media
+                      res = client.chat_completion(
+                          model="meta-llama/Llama-3.1-8B-Instruct",
+                          messages=[{"role": "system", "content": sys_prompt}],
+                          max_tokens=1500
                       )
-                      response = request.execute()
-                      log(f"✅ تم الرفع بنجاح! رابط الفيديو: https://www.youtube.com/watch?v={response['id']}")
+                      content = res.choices[0].message.content
+                      sents = re.findall(r"(?:S|س)\d+:\s*(.*?)(?=(?:P|ب|S|س)\d+:|$)", content, re.DOTALL | re.IGNORECASE)
+                      prompts = re.findall(r"(?:P|ب)\d+:\s*(.*?)(?=(?:S|س|P|ب)\d+:|$)", content, re.DOTALL | re.IGNORECASE)
+                      return [clean_arabic_text(s) for s in sents][:count], [p.strip() for p in prompts][:count]
                   except Exception as e:
-                      log(f"❌ فشل الرفع إلى يوتيوب: {e}")
-                  
-                  os.remove(final_v)
-                  os.remove("list.txt")
-                  os.remove("temp_background.jpg")
-                  if os.path.exists("clips"): shutil.rmtree("clips")
+                      attempts += 1
+                      switch_token(is_error=True)
+                      time.sleep(1)
+              return [], []
+
+          def generate_single_image(prompt, idx):
+              path = f"images/img_{idx}.jpg"
+              log(f"🖼️ [IMG {idx+1}] جاري الرسم...")
+              attempts = 0
+              max_attempts = len(HF_TOKENS) * 2
+              switch_token(is_error=False)
+              
+              while attempts < max_attempts:
+                  try:
+                      img = client.text_to_image(prompt, model="black-forest-labs/FLUX.1-schnell", width=WIDTH, height=HEIGHT)
+                      img.save(path)
+                      return path
+                  except Exception as e:
+                      attempts += 1
+                      switch_token(is_error=True)
+                      time.sleep(1)
+              return None
+
+          async def generate_single_voice(text, idx):
+              path = f"audio/voice_{idx}.mp3"
+              log(f"🎙️ [AUD {idx+1}] جاري التسجيل...")
+              try:
+                  comm = Communicate(text, "ar-EG-ShakirNeural")
+                  await comm.save(path)
+                  return path
+              except: return None
+
+          # ==========================================
+          # --- 5. دمج الفيديو بأقصى سرعة ---
+          # ==========================================
+          def render_fast_video(scenes_data):
+              log("🎬 [RENDER] جاري دمج المشاهد بأقصى سرعة...")
+              clips = []
+              for aud_p, img_p in scenes_data:
+                  if not aud_p or not img_p: continue
+                  try:
+                      audio = AudioFileClip(aud_p)
+                      duration = audio.duration + 0.5
+                      clip = (ImageClip(img_p)
+                              .set_duration(duration)
+                              .resize(lambda t: 1.0 + 0.05 * (t / duration)) 
+                              .set_position('center'))
+                      clip = clip.on_color(size=(WIDTH, HEIGHT), color=(0,0,0), pos='center')
+                      clips.append(clip.set_audio(audio))
+                  except: pass
+
+              if not clips: return None
+              
+              try:
+                  final = concatenate_videoclips(clips, method="compose")
+                  final.write_videofile(FINAL_VIDEO, fps=FPS, codec="libx264", audio_codec="aac", preset="ultrafast", logger=None)
+                  return FINAL_VIDEO
+              except: return None
+
+          # ==========================================
+          # --- 6. الرفع على اليوتيوب ---
+          # ==========================================
+          def upload_to_youtube(video_path, trend_title):
+              if not os.path.exists(video_path): return
+              
+              video_number = 1
+              if os.path.exists(HISTORY_FILE):
+                  with open(HISTORY_FILE, "r", encoding="utf-8") as f:
+                      video_number = len(f.read().splitlines())
+              
+              video_title = f"{trend_title} #{video_number}"
+              log(f"🚀 جاري الرفع إلى يوتيوب باسم: {video_title} ...")
+              
+              try:
+                  creds_data = json.loads(os.environ['YOUTUBE_CREDENTIALS'])
+                  creds = Credentials.from_authorized_user_info(creds_data)
+                  youtube = build('youtube', 'v3', credentials=creds)
+
+                  body = {
+                      'snippet': {
+                          'title': video_title,
+                          'description': '', 
+                          'categoryId': '24' 
+                      },
+                      'status': {
+                          'privacyStatus': 'public',
+                          'selfDeclaredMadeForKids': False
+                      }
+                  }
+
+                  media = MediaFileUpload(video_path, chunksize=-1, resumable=True)
+                  request = youtube.videos().insert(
+                      part=','.join(body.keys()),
+                      body=body,
+                      media_body=media
+                  )
+                  response = request.execute()
+                  log(f"✅ تم الرفع بنجاح! رابط الفيديو: https://www.youtube.com/watch?v={response['id']}")
+              except Exception as e:
+                  log(f"❌ فشل الرفع إلى يوتيوب: {e}")
+              
+              # التنظيف
+              if os.path.exists(video_path): os.remove(video_path)
+              if os.path.exists("images"): shutil.rmtree("images")
+              if os.path.exists("audio"): shutil.rmtree("audio")
+
+          # ==========================================
+          # --- التشغيل الأساسي المتسلسل ---
+          # ==========================================
+          async def create_video(title):
+              start = time.time()
+              setup_environment()
+              
+              sentences, prompts = generate_connected_story(title, NUM_SENTENCES)
+              if not sentences: 
+                  log("❌ [ERROR] فشل توليد القصة.")
+                  return
+
+              audio_paths, image_paths = [], []
+              for i in range(len(sentences)):
+                  img = generate_single_image(prompts[i], i)
+                  aud = await generate_single_voice(sentences[i], i)
+                  image_paths.append(img)
+                  audio_paths.append(aud)
+                  time.sleep(1)
+
+              v_path = render_fast_video(list(zip(audio_paths, image_paths)))
+              
+              if v_path:
+                  log(f"✅ [DONE] تم الانتهاء من الرندر في {round((time.time()-start)/60, 1)} دقيقة")
+                  upload_to_youtube(v_path, title)
 
           async def main():
               delay = random.randint(30, 90)
@@ -310,12 +300,10 @@ jobs:
               time.sleep(delay)
               
               title = get_filtered_trend()
-              if title: await create_video(title)
+              if title: 
+                  await create_video(title)
 
           if __name__ == "__main__":
-              if "ipykernel" in sys.modules:
-                  import nest_asyncio
-                  nest_asyncio.apply()
               asyncio.run(main())
           EOF
           python script.py
