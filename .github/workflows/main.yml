@@ -3,7 +3,7 @@ name: Perpetual Dual
 on:
   workflow_dispatch:
   schedule:
-    - cron: '0 0 * * *'
+    - cron: '0 0 * * *' # تشغيل احتياطي لتفادي توقف السلسلة
 
 concurrency:
   group: streaming-group
@@ -42,270 +42,270 @@ jobs:
           HF_TOKENS: ${{ secrets.HF_TOKENS }}
         run: |
           cat << 'EOF' > script.py
-import os, shutil, requests, asyncio, nest_asyncio, re, time, random, sys, json
-from datetime import datetime
-from pytrends.request import TrendReq
-from moviepy.editor import ImageClip, AudioFileClip, concatenate_videoclips
-from huggingface_hub import InferenceClient
-from edge_tts import Communicate
-from google.oauth2.credentials import Credentials
-from googleapiclient.discovery import build
-from googleapiclient.http import MediaFileUpload
+          import os, shutil, requests, asyncio, nest_asyncio, re, time, random, sys, json
+          from datetime import datetime
+          from pytrends.request import TrendReq
+          from moviepy.editor import ImageClip, AudioFileClip, concatenate_videoclips
+          from huggingface_hub import InferenceClient
+          from edge_tts import Communicate
+          from google.oauth2.credentials import Credentials
+          from googleapiclient.discovery import build
+          from googleapiclient.http import MediaFileUpload
 
-nest_asyncio.apply()
+          nest_asyncio.apply()
 
-HISTORY_FILE = "history.txt"
-NUM_SENTENCES = 40
-WIDTH, HEIGHT = 1280, 720
-FPS = 24
-FINAL_VIDEO = "output.mp4"
+          HISTORY_FILE = "history.txt"
+          NUM_SENTENCES = 40
+          WIDTH, HEIGHT = 1280, 720
+          FPS = 24
+          FINAL_VIDEO = "output.mp4"
 
-def log(msg):
-    print(msg)
+          def log(msg):
+              print(msg)
 
-# ==========================================
-# --- 1. التجهيز البرمجي ---
-# ==========================================
-def setup_environment():
-    for f in ["images", "audio"]:
-        if os.path.exists(f): shutil.rmtree(f)
-        os.makedirs(f, exist_ok=True)
-    log("🚀 [READY] بيئة العمل جاهزة.")
+          # ==========================================
+          # --- 1. التجهيز البرمجي ---
+          # ==========================================
+          def setup_environment():
+              for f in ["images", "audio"]:
+                  if os.path.exists(f): shutil.rmtree(f)
+                  os.makedirs(f, exist_ok=True)
+              log("🚀 [READY] بيئة العمل جاهزة.")
 
-# ==========================================
-# --- 2. إعدادات التوكنات ---
-# ==========================================
-hf_env = os.environ.get('HF_TOKENS', '')
-HF_TOKENS = [t.strip() for t in hf_env.split(',') if t.strip()]
+          # ==========================================
+          # --- 2. إعدادات التوكنات ---
+          # ==========================================
+          hf_env = os.environ.get('HF_TOKENS', '')
+          HF_TOKENS = [t.strip() for t in hf_env.split(',') if t.strip()]
 
-if not HF_TOKENS:
-    log("❌ [ERROR] لم يتم العثور على التوكنات! يرجى إضافة HF_TOKENS في أسرار المستودع (Secrets).")
-    sys.exit(1)
+          if not HF_TOKENS:
+              log("❌ [ERROR] لم يتم العثور على التوكنات! يرجى إضافة HF_TOKENS في أسرار المستودع (Secrets).")
+              sys.exit(1)
 
-current_token_idx = 0
-client = InferenceClient(token=HF_TOKENS[current_token_idx])
+          current_token_idx = 0
+          client = InferenceClient(token=HF_TOKENS[current_token_idx])
 
-def switch_token(is_error=False):
-    global current_token_idx, client
-    current_token_idx = (current_token_idx + 1) % len(HF_TOKENS)
-    if is_error:
-        log(f"⚠️ [ERROR] حدث خطأ أو توقف! جاري التبديل فوراً إلى التوكن رقم {current_token_idx + 1}...")
-    else:
-        log(f"🔄 [AUTO-SWITCH] تبديل تلقائي لتوزيع الضغط إلى التوكن رقم {current_token_idx + 1}...")
-    client = InferenceClient(token=HF_TOKENS[current_token_idx])
+          def switch_token(is_error=False):
+              global current_token_idx, client
+              current_token_idx = (current_token_idx + 1) % len(HF_TOKENS)
+              if is_error:
+                  log(f"⚠️ [ERROR] حدث خطأ أو توقف! جاري التبديل فوراً إلى التوكن رقم {current_token_idx + 1}...")
+              else:
+                  log(f"🔄 [AUTO-SWITCH] تبديل تلقائي لتوزيع الضغط إلى التوكن رقم {current_token_idx + 1}...")
+              client = InferenceClient(token=HF_TOKENS[current_token_idx])
 
-# ==========================================
-# --- 3. صيد التريند ---
-# ==========================================
-def get_filtered_trend():
-    log("🚀 جاري صيد التريند الحالي...")
-    pytrends = TrendReq(hl='ar', tz=0)
-    excluded_words = ["ديزني", "افلام", "فيلم", "فلم","هندى", "هندي", "صينى", "صيني","تركى", "تركي", "الحلقه", "الحلقة",  "كوري", "الذئاب", "باكستاني", "افلام", "حلقه", "حلقة","ديزنى"]
-    
-    try:
-        pytrends.build_payload(["مدبلج"], timeframe='now 4-H', gprop='youtube')
-        results = pytrends.related_queries()
-        used = []
-        if os.path.exists(HISTORY_FILE):
-            with open(HISTORY_FILE, "r", encoding="utf-8") as f: used = f.read().splitlines()
-        
-        today_str = datetime.now().strftime("%Y-%m-%d")
-        
-        if 'مدبلج' in results and results['مدبلج']['top'] is not None:
-            df_top = results['مدبلج']['top']
-            new_titles = []
-            for w in df_top['query'].tolist():
-                entry = f"{today_str}:{w}"
-                if "مدبلج" in w and len(w) >= 15 and entry not in used and not any(word in w for word in excluded_words):
-                    new_titles.append((w, entry))
-            
-            if new_titles:
-                q, entry = new_titles[0]
-                with open(HISTORY_FILE, "a", encoding="utf-8") as f: f.write(entry + "\n")
-                return q
-        log("⚠️ لا توجد تريندات جديدة.")
-        return None
-    except Exception as e:
-        log(f"⚠️ خطأ: {e}")
-        return None
+          # ==========================================
+          # --- 3. صيد التريند ---
+          # ==========================================
+          def get_filtered_trend():
+              log("🚀 جاري صيد التريند الحالي...")
+              pytrends = TrendReq(hl='ar', tz=0)
+              excluded_words = ["ديزني", "افلام", "فيلم", "فلم","هندى", "هندي", "صينى", "صيني","تركى", "تركي", "الحلقه", "الحلقة",  "كوري", "الذئاب", "باكستاني", "افلام", "حلقه", "حلقة","ديزنى"]
+              
+              try:
+                  pytrends.build_payload(["مدبلج"], timeframe='now 4-H', gprop='youtube')
+                  results = pytrends.related_queries()
+                  used = []
+                  if os.path.exists(HISTORY_FILE):
+                      with open(HISTORY_FILE, "r", encoding="utf-8") as f: used = f.read().splitlines()
+                  
+                  today_str = datetime.now().strftime("%Y-%m-%d")
+                  
+                  if 'مدبلج' in results and results['مدبلج']['top'] is not None:
+                      df_top = results['مدبلج']['top']
+                      new_titles = []
+                      for w in df_top['query'].tolist():
+                          entry = f"{today_str}:{w}"
+                          if "مدبلج" in w and len(w) >= 15 and entry not in used and not any(word in w for word in excluded_words):
+                              new_titles.append((w, entry))
+                  
+                      if new_titles:
+                          q, entry = new_titles[0]
+                          with open(HISTORY_FILE, "a", encoding="utf-8") as f: f.write(entry + "\n")
+                          return q
+                  log("⚠️ لا توجد تريندات جديدة.")
+                  return None
+              except Exception as e:
+                  log(f"⚠️ خطأ: {e}")
+                  return None
 
-# ==========================================
-# --- 4. التأليف والتوليد ---
-# ==========================================
-def clean_arabic_text(text):
-    text = re.sub(r'[^\u0600-\u06FF\s]', '', text)
-    return " ".join(text.split()).strip() + "."
+          # ==========================================
+          # --- 4. التأليف والتوليد ---
+          # ==========================================
+          def clean_arabic_text(text):
+              text = re.sub(r'[^\u0600-\u06FF\s]', '', text)
+              return " ".join(text.split()).strip() + "."
 
-def generate_connected_story(topic, count):
-    log(f"📝 [TEXT] جاري تأليف السيناريو عن: {topic}...")
-    sys_prompt = (
-        f"Write a {count}-part cohesive, continuously flowing story about '{topic}'. "
-        f"The narrative MUST be seamlessly connected, reading like one continuous unified paragraph, not isolated sentences. "
-        f"Arabic: 50-100 words per part, flowing logically from the previous part without breaking the story, NO punctuation inside, one period at end. "
-        f"English: Detailed 4k cinematic prompt matching the Arabic part. "
-        f"Format: S[N]: [Arabic] P[N]: [English]"
-    )
-    
-    attempts = 0
-    max_attempts = len(HF_TOKENS) * 2
-    switch_token(is_error=False)
-    
-    while attempts < max_attempts:
-        try:
-            res = client.chat_completion(
-                model="meta-llama/Llama-3.1-8B-Instruct",
-                messages=[{"role": "system", "content": sys_prompt}],
-                max_tokens=1500
-            )
-            content = res.choices[0].message.content
-            sents = re.findall(r"(?:S|س)\d+:\s*(.*?)(?=(?:P|ب|S|س)\d+:|$)", content, re.DOTALL | re.IGNORECASE)
-            prompts = re.findall(r"(?:P|ب)\d+:\s*(.*?)(?=(?:S|س|P|ب)\d+:|$)", content, re.DOTALL | re.IGNORECASE)
-            return [clean_arabic_text(s) for s in sents][:count], [p.strip() for p in prompts][:count]
-        except Exception as e:
-            attempts += 1
-            switch_token(is_error=True)
-            time.sleep(1)
-    return [], []
+          def generate_connected_story(topic, count):
+              log(f"📝 [TEXT] جاري تأليف السيناريو عن: {topic}...")
+              sys_prompt = (
+                  f"Write a {count}-part cohesive, continuously flowing story about '{topic}'. "
+                  f"The narrative MUST be seamlessly connected, reading like one continuous unified paragraph, not isolated sentences. "
+                  f"Arabic: 50-100 words per part, flowing logically from the previous part without breaking the story, NO punctuation inside, one period at end. "
+                  f"English: Detailed 4k cinematic prompt matching the Arabic part. "
+                  f"Format: S[N]: [Arabic] P[N]: [English]"
+              )
+              
+              attempts = 0
+              max_attempts = len(HF_TOKENS) * 2
+              switch_token(is_error=False)
+              
+              while attempts < max_attempts:
+                  try:
+                      res = client.chat_completion(
+                          model="meta-llama/Llama-3.1-8B-Instruct",
+                          messages=[{"role": "system", "content": sys_prompt}],
+                          max_tokens=1500
+                      )
+                      content = res.choices[0].message.content
+                      sents = re.findall(r"(?:S|س)\d+:\s*(.*?)(?=(?:P|ب|S|س)\d+:|$)", content, re.DOTALL | re.IGNORECASE)
+                      prompts = re.findall(r"(?:P|ب)\d+:\s*(.*?)(?=(?:S|س|P|ب)\d+:|$)", content, re.DOTALL | re.IGNORECASE)
+                      return [clean_arabic_text(s) for s in sents][:count], [p.strip() for p in prompts][:count]
+                  except Exception as e:
+                      attempts += 1
+                      switch_token(is_error=True)
+                      time.sleep(1)
+              return [], []
 
-def generate_single_image(prompt, idx):
-    path = f"images/img_{idx}.jpg"
-    log(f"🖼️ [IMG {idx+1}] جاري الرسم...")
-    attempts = 0
-    max_attempts = len(HF_TOKENS) * 2
-    switch_token(is_error=False)
-    
-    while attempts < max_attempts:
-        try:
-            img = client.text_to_image(prompt, model="black-forest-labs/FLUX.1-schnell", width=WIDTH, height=HEIGHT)
-            img.save(path)
-            return path
-        except Exception as e:
-            attempts += 1
-            switch_token(is_error=True)
-            time.sleep(1)
-    return None
+          def generate_single_image(prompt, idx):
+              path = f"images/img_{idx}.jpg"
+              log(f"🖼️ [IMG {idx+1}] جاري الرسم...")
+              attempts = 0
+              max_attempts = len(HF_TOKENS) * 2
+              switch_token(is_error=False)
+              
+              while attempts < max_attempts:
+                  try:
+                      img = client.text_to_image(prompt, model="black-forest-labs/FLUX.1-schnell", width=WIDTH, height=HEIGHT)
+                      img.save(path)
+                      return path
+                  except Exception as e:
+                      attempts += 1
+                      switch_token(is_error=True)
+                      time.sleep(1)
+              return None
 
-async def generate_single_voice(text, idx):
-    path = f"audio/voice_{idx}.mp3"
-    log(f"🎙️ [AUD {idx+1}] جاري التسجيل...")
-    try:
-        comm = Communicate(text, "ar-EG-ShakirNeural")
-        await comm.save(path)
-        return path
-    except: return None
+          async def generate_single_voice(text, idx):
+              path = f"audio/voice_{idx}.mp3"
+              log(f"🎙️ [AUD {idx+1}] جاري التسجيل...")
+              try:
+                  comm = Communicate(text, "ar-EG-ShakirNeural")
+                  await comm.save(path)
+                  return path
+              except: return None
 
-# ==========================================
-# --- 5. دمج الفيديو بأقصى سرعة ---
-# ==========================================
-def render_fast_video(scenes_data):
-    log("🎬 [RENDER] جاري دمج المشاهد بأقصى سرعة...")
-    clips = []
-    for aud_p, img_p in scenes_data:
-        if not aud_p or not img_p: continue
-        try:
-            audio = AudioFileClip(aud_p)
-            duration = audio.duration + 0.5
-            clip = (ImageClip(img_p)
-                    .set_duration(duration)
-                    .resize(lambda t: 1.0 + 0.05 * (t / duration)) 
-                    .set_position('center'))
-            clip = clip.on_color(size=(WIDTH, HEIGHT), color=(0,0,0), pos='center')
-            clips.append(clip.set_audio(audio))
-        except: pass
+          # ==========================================
+          # --- 5. دمج الفيديو بأقصى سرعة ---
+          # ==========================================
+          def render_fast_video(scenes_data):
+              log("🎬 [RENDER] جاري دمج المشاهد بأقصى سرعة...")
+              clips = []
+              for aud_p, img_p in scenes_data:
+                  if not aud_p or not img_p: continue
+                  try:
+                      audio = AudioFileClip(aud_p)
+                      duration = audio.duration + 0.5
+                      clip = (ImageClip(img_p)
+                              .set_duration(duration)
+                              .resize(lambda t: 1.0 + 0.05 * (t / duration)) 
+                              .set_position('center'))
+                      clip = clip.on_color(size=(WIDTH, HEIGHT), color=(0,0,0), pos='center')
+                      clips.append(clip.set_audio(audio))
+                  except: pass
 
-    if not clips: return None
-    
-    try:
-        final = concatenate_videoclips(clips, method="compose")
-        final.write_videofile(FINAL_VIDEO, fps=FPS, codec="libx264", audio_codec="aac", preset="ultrafast", logger=None)
-        return FINAL_VIDEO
-    except: return None
+              if not clips: return None
+              
+              try:
+                  final = concatenate_videoclips(clips, method="compose")
+                  final.write_videofile(FINAL_VIDEO, fps=FPS, codec="libx264", audio_codec="aac", preset="ultrafast", logger=None)
+                  return FINAL_VIDEO
+              except: return None
 
-# ==========================================
-# --- 6. الرفع على اليوتيوب ---
-# ==========================================
-def upload_to_youtube(video_path, trend_title):
-    if not os.path.exists(video_path): return
-    
-    video_number = 1
-    if os.path.exists(HISTORY_FILE):
-        with open(HISTORY_FILE, "r", encoding="utf-8") as f:
-            video_number = len(f.read().splitlines())
-    
-    video_title = f"{trend_title} #{video_number}"
-    log(f"🚀 جاري الرفع إلى يوتيوب باسم: {video_title} ...")
-    
-    try:
-        creds_data = json.loads(os.environ['YOUTUBE_CREDENTIALS'])
-        creds = Credentials.from_authorized_user_info(creds_data)
-        youtube = build('youtube', 'v3', credentials=creds)
+          # ==========================================
+          # --- 6. الرفع على اليوتيوب ---
+          # ==========================================
+          def upload_to_youtube(video_path, trend_title):
+              if not os.path.exists(video_path): return
+              
+              video_number = 1
+              if os.path.exists(HISTORY_FILE):
+                  with open(HISTORY_FILE, "r", encoding="utf-8") as f:
+                      video_number = len(f.read().splitlines())
+              
+              video_title = f"{trend_title} #{video_number}"
+              log(f"🚀 جاري الرفع إلى يوتيوب باسم: {video_title} ...")
+              
+              try:
+                  creds_data = json.loads(os.environ['YOUTUBE_CREDENTIALS'])
+                  creds = Credentials.from_authorized_user_info(creds_data)
+                  youtube = build('youtube', 'v3', credentials=creds)
 
-        body = {
-            'snippet': {
-                'title': video_title,
-                'description': '', 
-                'categoryId': '24' 
-            },
-            'status': {
-                'privacyStatus': 'public',
-                'selfDeclaredMadeForKids': False
-            }
-        }
+                  body = {
+                      'snippet': {
+                          'title': video_title,
+                          'description': '', 
+                          'categoryId': '24' 
+                      },
+                      'status': {
+                          'privacyStatus': 'public',
+                          'selfDeclaredMadeForKids': False
+                      }
+                  }
 
-        media = MediaFileUpload(video_path, chunksize=-1, resumable=True)
-        request = youtube.videos().insert(
-            part=','.join(body.keys()),
-            body=body,
-            media_body=media
-        )
-        response = request.execute()
-        log(f"✅ تم الرفع بنجاح! رابط الفيديو: https://www.youtube.com/watch?v={response['id']}")
-    except Exception as e:
-        log(f"❌ فشل الرفع إلى يوتيوب: {e}")
-    
-    # التنظيف
-    if os.path.exists(video_path): os.remove(video_path)
-    if os.path.exists("images"): shutil.rmtree("images")
-    if os.path.exists("audio"): shutil.rmtree("audio")
+                  media = MediaFileUpload(video_path, chunksize=-1, resumable=True)
+                  request = youtube.videos().insert(
+                      part=','.join(body.keys()),
+                      body=body,
+                      media_body=media
+                  )
+                  response = request.execute()
+                  log(f"✅ تم الرفع بنجاح! رابط الفيديو: https://www.youtube.com/watch?v={response['id']}")
+              except Exception as e:
+                  log(f"❌ فشل الرفع إلى يوتيوب: {e}")
+              
+              # التنظيف
+              if os.path.exists(video_path): os.remove(video_path)
+              if os.path.exists("images"): shutil.rmtree("images")
+              if os.path.exists("audio"): shutil.rmtree("audio")
 
-# ==========================================
-# --- التشغيل الأساسي المتسلسل ---
-# ==========================================
-async def create_video(title):
-    start = time.time()
-    setup_environment()
-    
-    sentences, prompts = generate_connected_story(title, NUM_SENTENCES)
-    if not sentences: 
-        log("❌ [ERROR] فشل توليد القصة.")
-        return
+          # ==========================================
+          # --- التشغيل الأساسي المتسلسل ---
+          # ==========================================
+          async def create_video(title):
+              start = time.time()
+              setup_environment()
+              
+              sentences, prompts = generate_connected_story(title, NUM_SENTENCES)
+              if not sentences: 
+                  log("❌ [ERROR] فشل توليد القصة.")
+                  return
 
-    audio_paths, image_paths = [], []
-    for i in range(len(sentences)):
-        img = generate_single_image(prompts[i], i)
-        aud = await generate_single_voice(sentences[i], i)
-        image_paths.append(img)
-        audio_paths.append(aud)
-        time.sleep(1)
+              audio_paths, image_paths = [], []
+              for i in range(len(sentences)):
+                  img = generate_single_image(prompts[i], i)
+                  aud = await generate_single_voice(sentences[i], i)
+                  image_paths.append(img)
+                  audio_paths.append(aud)
+                  time.sleep(1)
 
-    v_path = render_fast_video(list(zip(audio_paths, image_paths)))
-    
-    if v_path:
-        log(f"✅ [DONE] تم الانتهاء من الرندر في {round((time.time()-start)/60, 1)} دقيقة")
-        upload_to_youtube(v_path, title)
+              v_path = render_fast_video(list(zip(audio_paths, image_paths)))
+              
+              if v_path:
+                  log(f"✅ [DONE] تم الانتهاء من الرندر في {round((time.time()-start)/60, 1)} دقيقة")
+                  upload_to_youtube(v_path, title)
 
-async def main():
-    delay = random.randint(1, 3)
-    log(f"⏳ بدء الجلسة.. سيتم الانتظار لمدة {delay} ثانية قبل التنفيذ...")
-    time.sleep(delay)
-    
-    title = get_filtered_trend()
-    if title: 
-        await create_video(title)
+          async def main():
+              delay = random.randint(30, 90)
+              log(f"⏳ بدء الجلسة.. سيتم الانتظار لمدة {delay} ثانية قبل التنفيذ...")
+              time.sleep(delay)
+              
+              title = get_filtered_trend()
+              if title: 
+                  await create_video(title)
 
-if __name__ == "__main__":
-    asyncio.run(main())
-EOF
+          if __name__ == "__main__":
+              asyncio.run(main())
+          EOF
           python script.py
 
       - name: 💾 Commit History to Repository
