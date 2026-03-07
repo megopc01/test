@@ -34,6 +34,8 @@ jobs:
 
       - name: 📦 Install Dependencies
         run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
           pip install pytrends huggingface_hub moviepy==1.0.3 tqdm requests nest_asyncio pillow==9.5.0 edge-tts google-auth google-auth-oauthlib google-auth-httplib2 google-api-python-client
 
       - name: 📜 Create and Run Script
@@ -158,7 +160,6 @@ jobs:
               
               while attempts < max_attempts:
                   try:
-                      # تم إرجاع نفس النموذج ونفس دور system الموجود في السكربت الشغال معك
                       res = client.chat_completion(
                           model="meta-llama/Llama-3.1-8B-Instruct",
                           messages=[{"role": "system", "content": sys_prompt}],
