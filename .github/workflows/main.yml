@@ -3,7 +3,7 @@ name: Perpetual Dual
 on:
   workflow_dispatch:
   schedule:
-    - cron: '0 0 * * *'
+    - cron: '0 0 * * *' # تشغيل احتياطي لتفادي توقف السلسلة
 
 concurrency:
   group: streaming-group
