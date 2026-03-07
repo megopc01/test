@@ -55,7 +55,7 @@ jobs:
           nest_asyncio.apply()
 
           HISTORY_FILE = "history.txt"
-          NUM_SENTENCES = 40
+          NUM_SENTENCES = 3
           WIDTH, HEIGHT = 1280, 720
           FPS = 24
 
