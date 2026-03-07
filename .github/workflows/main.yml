@@ -158,9 +158,10 @@ jobs:
               
               while attempts < max_attempts:
                   try:
+                      # تم إرجاع نفس النموذج ونفس دور system الموجود في السكربت الشغال معك
                       res = client.chat_completion(
-                          model="Qwen/Qwen2.5-72B-Instruct",
-                          messages=[{"role": "user", "content": sys_prompt}],
+                          model="meta-llama/Llama-3.1-8B-Instruct",
+                          messages=[{"role": "system", "content": sys_prompt}],
                           max_tokens=1500
                       )
                       content = res.choices[0].message.content
