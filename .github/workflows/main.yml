@@ -75,7 +75,6 @@ jobs:
           # --- 2. الإعدادات الديناميكية (التوكنات) ---
           # ==========================================
           hf_env = os.environ.get('HF_TOKENS', '')
-          # قراءة التوكنات من المتغير بحيث يكون كل توكن في سطر
           HF_TOKENS = [t.strip() for t in hf_env.splitlines() if t.strip()]
 
           if not HF_TOKENS:
@@ -86,15 +85,12 @@ jobs:
           client = InferenceClient(token=HF_TOKENS[current_token_idx])
 
           def switch_token(is_error=False):
-              """دالة لتبديل التوكن تلقائياً لتوزيع الضغط أو عند حدوث خطأ"""
               global current_token_idx, client
               current_token_idx = (current_token_idx + 1) % len(HF_TOKENS)
-              
               if is_error:
-                  log(f"⚠️ [ERROR] حدث خطأ أو توقف! جاري التبديل فوراً إلى التوكن رقم {current_token_idx + 1}...")
+                  log(f"⚠️ [ERROR] تبديل التوكن إلى: {current_token_idx + 1}...")
               else:
-                  log(f"🔄 [AUTO-SWITCH] تبديل تلقائي لتوزيع الضغط إلى التوكن رقم {current_token_idx + 1}...")
-                  
+                  log(f"🔄 [AUTO-SWITCH] تبديل التوكن إلى: {current_token_idx + 1}...")
               client = InferenceClient(token=HF_TOKENS[current_token_idx])
 
           # ==========================================
@@ -129,7 +125,7 @@ jobs:
                   log("⚠️ لا توجد تريندات جديدة.")
                   return None
               except Exception as e:
-                  log(f"⚠️ خطأ: {e}")
+                  log(f"⚠️ خطأ التريند: {e}")
                   return None
 
           # ==========================================
@@ -140,7 +136,7 @@ jobs:
               return " ".join(text.split()).strip() + "."
 
           # ==========================================
-          # --- 5. محركات الذكاء الاصطناعي (تأليف ورسم مع تبديل تلقائي) ---
+          # --- 5. محركات الذكاء الاصطناعي ---
           # ==========================================
           def generate_connected_story(topic, count):
               log(f"📝 [TEXT] جاري تأليف السيناريو عن: {topic}...")
@@ -153,14 +149,13 @@ jobs:
               )
               
               attempts = 0
-              max_attempts = len(HF_TOKENS) * 2 # المحاولة مرتين لكل توكن كحد أقصى
-              switch_token(is_error=False) # تبديل تلقائي قبل بدء التأليف
+              max_attempts = len(HF_TOKENS) * 3
               
               while attempts < max_attempts:
                   try:
                       res = client.chat_completion(
-                          model="meta-llama/Llama-3.1-8B-Instruct",
-                          messages=[{"role": "system", "content": sys_prompt}],
+                          model="Qwen/Qwen2.5-72B-Instruct",
+                          messages=[{"role": "user", "content": sys_prompt}],
                           max_tokens=1500
                       )
                       content = res.choices[0].message.content
@@ -168,28 +163,27 @@ jobs:
                       prompts = re.findall(r"(?:P|ب)\d+:\s*(.*?)(?=(?:S|س|P|ب)\d+:|$)", content, re.DOTALL | re.IGNORECASE)
                       return [clean_arabic_text(s) for s in sents][:count], [p.strip() for p in prompts][:count]
                   except Exception as e:
+                      log(f"⚠️ خطأ أثناء التأليف: {e}")
                       attempts += 1
-                      switch_token(is_error=True) # التبديل عند حدوث خطأ
-                      time.sleep(1)
+                      switch_token(is_error=True)
+                      time.sleep(2)
               return [], []
 
           def generate_single_image(prompt, idx):
               path = f"images/img_{idx}.jpg"
               log(f"🖼️ [IMG {idx+1}] جاري الرسم...")
-              
               attempts = 0
               max_attempts = len(HF_TOKENS) * 2
-              switch_token(is_error=False) # تبديل تلقائي لتوزيع الضغط قبل رسم كل صورة
-              
               while attempts < max_attempts:
                   try:
                       img = client.text_to_image(prompt, model="black-forest-labs/FLUX.1-schnell", width=WIDTH, height=HEIGHT)
                       img.save(path)
                       return path
                   except Exception as e:
+                      log(f"⚠️ خطأ أثناء الرسم: {e}")
                       attempts += 1
-                      switch_token(is_error=True) # التبديل عند حدوث خطأ
-                      time.sleep(1)
+                      switch_token(is_error=True)
+                      time.sleep(2)
               return None
 
           async def generate_single_voice(text, idx):
@@ -205,54 +199,36 @@ jobs:
           # --- 6. الرندر السريع مع FFMPEG ---
           # ==========================================
           def render_fast_video(scenes_data):
-              log("🎬 [RENDER] جاري تجهيز المشاهد للدمج النهائي...")
+              log("🎬 [RENDER] جاري تجهيز المشاهد...")
               clip_files = []
-              
               for idx, (aud_p, img_p) in enumerate(scenes_data):
                   if not aud_p or not img_p: continue
                   try:
                       audio = AudioFileClip(aud_p)
                       duration = audio.duration + 0.5
-                      
-                      # إنشاء مقطع مؤقت باستخدام MoviePy
-                      clip = (ImageClip(img_p)
-                              .set_duration(duration)
-                              .resize(lambda t: 1.0 + 0.05 * (t / duration)) 
-                              .set_position('center'))
+                      clip = (ImageClip(img_p).set_duration(duration).resize(lambda t: 1.0 + 0.05 * (t / duration)).set_position('center'))
                       clip = clip.on_color(size=(WIDTH, HEIGHT), color=(0,0,0), pos='center')
                       clip = clip.set_audio(audio)
-                      
                       clip_path = f"clips/clip_{idx}.mp4"
                       clip.write_videofile(clip_path, fps=FPS, codec="libx264", audio_codec="aac", preset="ultrafast", logger=None)
                       clip_files.append(clip_path)
-                  except Exception as e:
-                      log(f"⚠️ خطأ في معالجة المشهد {idx}: {e}")
-
-              if not clip_files: return None
+                  except: pass
               
-              # كتابة ملف list.txt لبرنامج ffmpeg
               with open("list.txt", "w", encoding="utf-8") as f:
-                  for c in clip_files:
-                      f.write(f"file '{c}'\n")
-                      
+                  for c in clip_files: f.write(f"file '{c}'\n")
               final_v = "output.mp4"
-              log("🎬 [RENDER] جاري دمج المشاهد باستخدام ffmpeg...")
               subprocess.run(f"ffmpeg -y -f concat -safe 0 -i list.txt -c:v copy {final_v}", shell=True)
-              
               return final_v
 
           # ==========================================
-          # --- 7. التشغيل المتسلسل الموفر للطاقة والرفع لليوتيوب ---
+          # --- 7. الرفع والتشغيل ---
           # ==========================================
           async def create_video(title):
               start = time.time()
               setup_environment()
-              
               sentences, prompts = generate_connected_story(title, NUM_SENTENCES)
-              if not sentences: 
-                  log("❌ [ERROR] فشل توليد القصة بعد استنفاد جميع التوكنات والمحاولات.")
-                  return
-
+              if not sentences: return
+              
               audio_paths, image_paths = [], []
               for i in range(len(sentences)):
                   img = generate_single_image(prompts[i], i)
@@ -260,69 +236,39 @@ jobs:
                   image_paths.append(img)
                   audio_paths.append(aud)
                   time.sleep(1)
-
+              
               final_v = render_fast_video(list(zip(audio_paths, image_paths)))
               
               if final_v and os.path.exists(final_v):
-                  log(f"✅ [DONE] تم الانتهاء من الرندر في {round((time.time()-start)/60, 1)} دقيقة")
-                  
-                  # استخراج رقم الفيديو للتسلسل (1, 2, 3...) بناءً على سجل trends
                   video_number = 1
                   if os.path.exists(HISTORY_FILE):
-                      with open(HISTORY_FILE, "r", encoding="utf-8") as f:
-                          video_number = len(f.read().splitlines())
-                  
+                      with open(HISTORY_FILE, "r", encoding="utf-8") as f: video_number = len(f.read().splitlines())
                   video_title = f"{title} #{video_number}"
-                  log(f"🚀 جاري الرفع إلى يوتيوب باسم: {video_title} ...")
                   
                   try:
                       creds_data = json.loads(os.environ['YOUTUBE_CREDENTIALS'])
                       creds = Credentials.from_authorized_user_info(creds_data)
                       youtube = build('youtube', 'v3', credentials=creds)
-
-                      body = {
-                          'snippet': {
-                              'title': video_title,
-                              'description': '', # الوصف فارغ كما طلبت
-                              'categoryId': '24' # الترفيه
-                          },
-                          'status': {
-                              'privacyStatus': 'public',
-                              'selfDeclaredMadeForKids': False
-                          }
-                      }
-
+                      body = {'snippet': {'title': video_title, 'description': '', 'categoryId': '24'}, 'status': {'privacyStatus': 'public', 'selfDeclaredMadeForKids': False}}
                       media = MediaFileUpload(final_v, chunksize=-1, resumable=True)
-                      request = youtube.videos().insert(
-                          part=','.join(body.keys()),
-                          body=body,
-                          media_body=media
-                      )
+                      request = youtube.videos().insert(part=','.join(body.keys()), body=body, media_body=media)
                       response = request.execute()
                       log(f"✅ تم الرفع بنجاح! رابط الفيديو: https://www.youtube.com/watch?v={response['id']}")
                   except Exception as e:
-                      log(f"❌ فشل الرفع إلى يوتيوب: {e}")
+                      log(f"❌ فشل الرفع: {e}")
                   
-                  # التنظيف كما طلبت بالضبط
-                  if os.path.exists(final_v): os.remove(final_v)
-                  if os.path.exists("list.txt"): os.remove("list.txt")
-                  if os.path.exists("temp_background.jpg"): os.remove("temp_background.jpg")
+                  os.remove(final_v)
+                  os.remove("list.txt")
                   if os.path.exists("clips"): shutil.rmtree("clips")
                   if os.path.exists("images"): shutil.rmtree("images")
                   if os.path.exists("audio"): shutil.rmtree("audio")
 
           async def main():
-              delay = random.randint(1, 3)
-              log(f"⏳ بدء الجلسة.. سيتم الانتظار لمدة {delay} ثانية قبل التنفيذ...")
-              time.sleep(delay)
-              
+              time.sleep(random.randint(10, 30))
               title = get_filtered_trend()
               if title: await create_video(title)
 
           if __name__ == "__main__":
-              if "ipykernel" in sys.modules:
-                  import nest_asyncio
-                  nest_asyncio.apply()
               asyncio.run(main())
           EOF
           python script.py
@@ -339,6 +285,5 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          echo "تم إنشاء الفيديو وتحديث السجل. ستبدأ فترة الانتظار لـ 3 ساعات..."
           sleep 10800
           gh workflow run "Perpetual Dual" --ref ${{ github.ref_name }}
