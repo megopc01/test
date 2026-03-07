@@ -245,7 +245,6 @@ jobs:
               except Exception as e:
                   log(f"❌ فشل الرفع إلى يوتيوب: {e}")
               
-              # التنظيف
               if os.path.exists(video_path): os.remove(video_path)
               if os.path.exists("images"): shutil.rmtree("images")
               if os.path.exists("audio"): shutil.rmtree("audio")
@@ -255,7 +254,7 @@ jobs:
               setup_environment()
               
               sentences, prompts = generate_connected_story(title, NUM_SENTENCES)
-              if not sentences: 
+              if not sentences:
                   log("❌ [ERROR] فشل توليد القصة.")
                   return
 
