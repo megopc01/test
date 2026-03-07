@@ -3,7 +3,7 @@ name: Perpetual Dual
 on:
   workflow_dispatch:
   schedule:
-    - cron: '0 0 * * *' # تشغيل احتياطي لتفادي توقف السلسلة
+    - cron: '0 0 * * *'
 
 concurrency:
   group: streaming-group
@@ -63,18 +63,12 @@ jobs:
           def log(msg):
               print(msg)
 
-          # ==========================================
-          # --- 1. التجهيز البرمجي ---
-          # ==========================================
           def setup_environment():
               for f in ["images", "audio"]:
                   if os.path.exists(f): shutil.rmtree(f)
                   os.makedirs(f, exist_ok=True)
               log("🚀 [READY] بيئة العمل جاهزة.")
 
-          # ==========================================
-          # --- 2. إعدادات التوكنات ---
-          # ==========================================
           hf_env = os.environ.get('HF_TOKENS', '')
           HF_TOKENS = [t.strip() for t in hf_env.split(',') if t.strip()]
 
@@ -94,9 +88,6 @@ jobs:
                   log(f"🔄 [AUTO-SWITCH] تبديل تلقائي لتوزيع الضغط إلى التوكن رقم {current_token_idx + 1}...")
               client = InferenceClient(token=HF_TOKENS[current_token_idx])
 
-          # ==========================================
-          # --- 3. صيد التريند ---
-          # ==========================================
           def get_filtered_trend():
               log("🚀 جاري صيد التريند الحالي...")
               pytrends = TrendReq(hl='ar', tz=0)
@@ -129,9 +120,6 @@ jobs:
                   log(f"⚠️ خطأ: {e}")
                   return None
 
-          # ==========================================
-          # --- 4. التأليف والتوليد ---
-          # ==========================================
           def clean_arabic_text(text):
               text = re.sub(r'[^\u0600-\u06FF\s]', '', text)
               return " ".join(text.split()).strip() + "."
@@ -194,9 +182,6 @@ jobs:
                   return path
               except: return None
 
-          # ==========================================
-          # --- 5. دمج الفيديو بأقصى سرعة ---
-          # ==========================================
           def render_fast_video(scenes_data):
               log("🎬 [RENDER] جاري دمج المشاهد بأقصى سرعة...")
               clips = []
@@ -221,9 +206,6 @@ jobs:
                   return FINAL_VIDEO
               except: return None
 
-          # ==========================================
-          # --- 6. الرفع على اليوتيوب ---
-          # ==========================================
           def upload_to_youtube(video_path, trend_title):
               if not os.path.exists(video_path): return
               
@@ -268,9 +250,6 @@ jobs:
               if os.path.exists("images"): shutil.rmtree("images")
               if os.path.exists("audio"): shutil.rmtree("audio")
 
-          # ==========================================
-          # --- التشغيل الأساسي المتسلسل ---
-          # ==========================================
           async def create_video(title):
               start = time.time()
               setup_environment()
