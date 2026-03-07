@@ -39,7 +39,6 @@ jobs:
       - name: 📜 Create and Run Script
         env:
           YOUTUBE_CREDENTIALS: ${{ secrets.YOUTUBE_CREDENTIALS }}
-          HF_TOKENS: ${{ secrets.HF_TOKENS }}
         run: |
           cat << 'EOF' > script.py
           import os, shutil, requests, asyncio, nest_asyncio, re, time, random, sys, json
@@ -55,6 +54,7 @@ jobs:
           nest_asyncio.apply()
 
           HISTORY_FILE = "history.txt"
+          TOKEN_FILE = ".github/workflows/tokin.txt"
           NUM_SENTENCES = 40
           WIDTH, HEIGHT = 1280, 720
           FPS = 24
@@ -69,11 +69,16 @@ jobs:
                   os.makedirs(f, exist_ok=True)
               log("🚀 [READY] بيئة العمل جاهزة.")
 
-          hf_env = os.environ.get('HF_TOKENS', '')
-          HF_TOKENS = [t.strip() for t in hf_env.split(',') if t.strip()]
+          # قراءة التوكنات من الملف
+          HF_TOKENS = []
+          if os.path.exists(TOKEN_FILE):
+              with open(TOKEN_FILE, "r", encoding="utf-8") as f:
+                  content = f.read()
+                  # تحويل الأسطر الجديدة إلى فواصل ثم التقسيم
+                  HF_TOKENS = [t.strip() for t in content.replace('\n', ',').split(',') if t.strip()]
 
           if not HF_TOKENS:
-              log("❌ [ERROR] لم يتم العثور على التوكنات! يرجى إضافة HF_TOKENS في أسرار المستودع (Secrets).")
+              log(f"❌ [ERROR] لم يتم العثور على التوكنات! يرجى التأكد من وجودها داخل الملف: {TOKEN_FILE}")
               sys.exit(1)
 
           current_token_idx = 0
