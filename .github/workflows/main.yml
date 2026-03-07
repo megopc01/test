@@ -146,8 +146,8 @@ jobs:
               while attempts < max_attempts:
                   try:
                       res = client.chat_completion(
-                          model="meta-llama/Llama-3.1-8B-Instruct",
-                          messages=[{"role": "system", "content": sys_prompt}],
+                          model="Qwen/Qwen2.5-72B-Instruct",
+                          messages=[{"role": "user", "content": sys_prompt}],
                           max_tokens=1500
                       )
                       content = res.choices[0].message.content
@@ -155,6 +155,7 @@ jobs:
                       prompts = re.findall(r"(?:P|ب)\d+:\s*(.*?)(?=(?:S|س|P|ب)\d+:|$)", content, re.DOTALL | re.IGNORECASE)
                       return [clean_arabic_text(s) for s in sents][:count], [p.strip() for p in prompts][:count]
                   except Exception as e:
+                      log(f"⚠️ تفاصيل الخطأ في التأليف: {e}")
                       attempts += 1
                       switch_token(is_error=True)
                       time.sleep(1)
@@ -173,6 +174,7 @@ jobs:
                       img.save(path)
                       return path
                   except Exception as e:
+                      log(f"⚠️ تفاصيل الخطأ في الرسم: {e}")
                       attempts += 1
                       switch_token(is_error=True)
                       time.sleep(1)
@@ -185,7 +187,9 @@ jobs:
                   comm = Communicate(text, "ar-EG-ShakirNeural")
                   await comm.save(path)
                   return path
-              except: return None
+              except Exception as e:
+                  log(f"⚠️ تفاصيل الخطأ في الصوت: {e}")
+                  return None
 
           def render_fast_video(scenes_data):
               log("🎬 [RENDER] جاري دمج المشاهد بأقصى سرعة...")
