@@ -57,7 +57,7 @@ jobs:
           nest_asyncio.apply()
 
           HISTORY_FILE = "history.txt"
-          NUM_SENTENCES = 3
+          NUM_SENTENCES = 10
           WIDTH, HEIGHT = 1280, 720
           FPS = 24
 
@@ -108,7 +108,7 @@ jobs:
               excluded_words = ["ديزني", "افلام", "فيلم", "فلم","هندى", "هندي", "صينى", "صيني","تركى", "تركي", "الحلقه", "الحلقة",  "كوري", "الذئاب", "باكستاني", "افلام", "حلقه", "حلقة","ديزنى"]
               
               try:
-                  pytrends.build_payload(["مدبلج"], timeframe='now 4-H', gprop='youtube')
+                  pytrends.build_payload(["قصة"], timeframe='now 4-H', gprop='youtube')
                   results = pytrends.related_queries()
                   used = []
                   if os.path.exists(HISTORY_FILE):
@@ -116,12 +116,12 @@ jobs:
                   
                   today_str = datetime.now().strftime("%Y-%m-%d")
                   
-                  if 'مدبلج' in results and results['مدبلج']['top'] is not None:
-                      df_top = results['مدبلج']['top']
+                  if 'قصة' in results and results['قصة']['top'] is not None:
+                      df_top = results['قصة']['top']
                       new_titles = []
                       for w in df_top['query'].tolist():
                           entry = f"{today_str}:{w}"
-                          if "مدبلج" in w and len(w) >= 15 and entry not in used and not any(word in w for word in excluded_words):
+                          if "قصة" in w and len(w) >= 15 and entry not in used and not any(word in w for word in excluded_words):
                               new_titles.append((w, entry))
                       
                       if new_titles:
