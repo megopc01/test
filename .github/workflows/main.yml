@@ -34,7 +34,7 @@ jobs:
 
       - name: 📦 Install Dependencies
         run: |
-          pip install pytrends huggingface_hub moviepy tqdm requests nest_asyncio pillow edge-tts google-auth google-auth-oauthlib google-auth-httplib2 google-api-python-client
+          pip install pytrends huggingface_hub moviepy==1.0.3 tqdm requests nest_asyncio pillow edge-tts google-auth google-auth-oauthlib google-auth-httplib2 google-api-python-client
 
       - name: 📜 Create and Run Script
         env:
