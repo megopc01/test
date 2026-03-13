@@ -262,7 +262,7 @@ jobs:
 
                   expand_count = 0
                   # التمديد يتم بناءً على عدد الفصول (الأسطر الجديدة) وليس الجمل القصيرة
-                  while len(raw_story.split('\n')) < 1 and expand_count < 20:
+                  while len(raw_story.split('\n')) < 50 and expand_count < 20:
                       extend_prompt = "أكمل القصة من حيث توقفت بأسلوب السرد المباشر والمشوق والمحطات. التزم بالشروط السابقة السرد المباشر بدون مقدمات، بدون تكرار)."
                       response_ext = client.chat.completions.create(
                           model="gpt-4",
