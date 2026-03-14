@@ -2,8 +2,6 @@ name: Perpetual Dual
 
 on:
   workflow_dispatch:
-  schedule:
-    - cron: '0 0 * * *' # تشغيل احتياطي لتفادي توقف السلسلة
 
 concurrency:
   group: streaming-group
@@ -193,7 +191,17 @@ jobs:
           # ==========================================
           # حلقة التكرار اللانهائية لإنتاج الفيديوهات تباعاً
           # ==========================================
+          SCRIPT_START_TIME = time.time()
+          MAX_RUNTIME_SECONDS = 4 * 60 * 60 # 4 ساعات بالثواني
+
           while True:
+              # التحقق من مرور 4 ساعات لإنهاء الجلسة وبدء جلسة جديدة
+              if time.time() - SCRIPT_START_TIME > MAX_RUNTIME_SECONDS:
+                  print("\n" + "="*60)
+                  print("⏳ اكتملت 4 ساعات من العمل المستمر. سيتم إنهاء الجلسة الحالية وبدء جلسة جديدة...")
+                  print("="*60)
+                  break
+
               print("\n" + "="*60)
               print("🔄 بدء دورة جديدة لإنتاج فيديو...")
               print("="*60)
