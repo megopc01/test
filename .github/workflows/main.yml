@@ -189,6 +189,18 @@ jobs:
           from g4f.client import Client
           client = Client()
 
+          # --- دالة مخصصة لعمل طلبات g4f مع مهلة زمنية (Timeout) لتجنب التعليق النهائي ---
+          def safe_g4f_call(messages_list, max_tks=4000, timeout_sec=180):
+              def _call():
+                  return client.chat.completions.create(
+                      model="gpt-4",
+                      messages=messages_list,
+                      max_tokens=max_tks
+                  )
+              with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                  future = executor.submit(_call)
+                  return future.result(timeout=timeout_sec)
+
           # ==========================================
           # حلقة التكرار اللانهائية لإنتاج الفيديوهات تباعاً
           # ==========================================
@@ -262,26 +274,19 @@ jobs:
 
               raw_story = ""
               try:
-                  response = client.chat.completions.create(
-                      model="gpt-4",
-                      messages=[{"role": "user", "content": prompt_text}],
-                      max_tokens=4000
-                  )
+                  response = safe_g4f_call([{"role": "user", "content": prompt_text}], 4000, 180)
                   raw_story = response.choices[0].message.content.strip()
 
                   expand_count = 0
                   # التمديد يتم بناءً على عدد الفصول (الأسطر الجديدة) وليس الجمل القصيرة
                   while len(raw_story.split('\n')) < 50 and expand_count < 20:
                       extend_prompt = "أكمل القصة من حيث توقفت بأسلوب السرد المباشر والمشوق والمحطات. التزم بالشروط السابقة السرد المباشر بدون مقدمات، بدون تكرار)."
-                      response_ext = client.chat.completions.create(
-                          model="gpt-4",
-                          messages=[
-                              {"role": "user", "content": prompt_text},
-                              {"role": "assistant", "content": raw_story[-2000:]},
-                              {"role": "user", "content": extend_prompt}
-                          ],
-                          max_tokens=4000
-                      )
+                      msgs = [
+                          {"role": "user", "content": prompt_text},
+                          {"role": "assistant", "content": raw_story[-2000:]},
+                          {"role": "user", "content": extend_prompt}
+                      ]
+                      response_ext = safe_g4f_call(msgs, 4000, 180)
                       raw_story += "\n\n" + response_ext.choices[0].message.content.strip()
                       expand_count += 1
 
@@ -304,10 +309,11 @@ jobs:
               # 2. استخراج الشخصيات
               # ==========================================
               print("\n[2/5] 👤 جاري استخراج ملامح الشخصيات...")
+              sys.stdout.flush() # تفريغ المتغيرات لضمان طباعة النص
               char_extraction_prompt = f"""اقرأ القصة واستخرج أسماء الشخصيات. ابتكر لكل شخصية وصفاً جسدياً دقيقاً باللغة الإنجليزية. الرد سطور (الاسم بالعربي: الوصف بالإنجليزي). القصة:\n{raw_story[:4000]}"""
               character_map = {}
               try:
-                  char_response = client.chat.completions.create(model="gpt-4", messages=[{"role": "user", "content": char_extraction_prompt}])
+                  char_response = safe_g4f_call([{"role": "user", "content": char_extraction_prompt}], 4000, 120)
                   for line in char_response.choices[0].message.content.strip().split('\n'):
                       if ':' in line:
                           ar_name, en_desc = line.split(':', 1)
@@ -409,11 +415,17 @@ jobs:
                   })
 
               # حلقة لانهائية (تعمل كإصرار عنيد) تستمر حتى اكتمال العدد المطلوب من الصور المخصصة
+              horde_start = time.time()
               while True:
+                  # حماية من تعليق السيرفرات لأكثر من 30 دقيقة للصور
+                  if time.time() - horde_start > 1800:
+                      print("\n⚠️ تجاوز توليد الصور الوقت المحدد (30 دقيقة)، سيتم الإكمال بالصور الجاهزة لتجنب التعليق...")
+                      break
+
                   completed_count = sum(1 for t in pending_tasks if t["status"] == "done")
                   progress_bar(completed_count, total_images_needed, "🎨 توليد وتحميل الصور المخصصة")
 
-                  if completed_count == total_images_needed:
+                  if completed_count >= total_images_needed:
                       break
 
                   # إرسال الطلبات المعلقة (دفعات صغيرة لتجنب ضغط السيرفر)
@@ -476,8 +488,12 @@ jobs:
 
                   time.sleep(5) # انتظار بين كل فحص وآخر
 
-              # تجميع مسارات الصور بنفس ترتيب المهام لضمان التزامن المثالي
-              downloaded_images = [t["img_path"] for t in pending_tasks]
+              # تجميع مسارات الصور بنفس ترتيب المهام لضمان التزامن المثالي (مع التخطي لمن لم يكتمل بسبب التايم أوت)
+              downloaded_images = [t["img_path"] for t in pending_tasks if t["img_path"] is not None]
+              
+              if not downloaded_images:
+                  print("❌ لم يتم تحميل أي صور، سيتم تخطي هذا الفيديو والمحاولة مجدداً.")
+                  continue
 
               print("\n✅ تم جلب جميع الصور المطلوبة والمترجمة بنجاح وبأمان تام!")
 
