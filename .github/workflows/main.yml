@@ -390,19 +390,17 @@ jobs:
               total_images_needed = len(image_tasks)
 
               # ==========================================
-              # 4. التوليد عبر AI Horde (مع إصرار عنيد وطلبات مخصصة لكل فقرة)
+              # 4. التوليد عبر AI Horde (إصلاح مشكلة التوقف والتعليق)
               # ==========================================
               print(f"\n[4/5] 🎨 طلب {total_images_needed} صورة من AI Horde بذكاء وإصرار (حسب كل فقرة وبدون صور عارية)...")
 
               chars_desc = ", ".join(character_map.values())
 
-              # التحديث: وضع كلمات سلبية قوية جداً لمنع أي صور عارية أو إيحاءات
               negative_prompt = "nsfw, nude, naked, nudity, explicit, adult, porn, cartoon, anime, 3d, sketches, worst quality, low quality, deformed, ugly, bad anatomy, bad hands, text, error, blurry, mutation"
 
               horde_url = "https://aihorde.net/api/v2/generate/async"
               headers = {"apikey": "0ENZZBFOx-U1PwqJY_n-FQ", "Content-Type": "application/json"}
 
-              # إنشاء قائمة بمهام الصور لتتبعها فرادى لأن كل صورة لها Prompt مختلف (مترجم من فقرتها)
               pending_tasks = []
               for idx, task in enumerate(image_tasks):
                   master_prompt = f"{task['prompt_eng']}, featuring {chars_desc}, ultra realistic, photorealistic, RAW photo, 8k uhd, dslr, soft lighting, masterpiece"
@@ -410,28 +408,30 @@ jobs:
                       "task_idx": idx,
                       "prompt": f"{master_prompt} ### {negative_prompt}",
                       "job_id": None,
-                      "status": "pending", # الحالات: pending, processing, done
-                      "img_path": None
+                      "status": "pending", # الحالات: pending, processing, done, failed
+                      "img_path": None,
+                      "retries": 0 # عدد المحاولات لتجنب اللوب اللانهائي
                   })
 
-              # حلقة لانهائية (تعمل كإصرار عنيد) تستمر حتى اكتمال العدد المطلوب من الصور المخصصة
               horde_start = time.time()
               while True:
-                  # حماية من تعليق السيرفرات لأكثر من 30 دقيقة للصور
                   if time.time() - horde_start > 1800:
-                      print("\n⚠️ تجاوز توليد الصور الوقت المحدد (30 دقيقة)، سيتم الإكمال بالصور الجاهزة لتجنب التعليق...")
+                      print("\n⚠️ تجاوز توليد الصور الوقت المحدد (30 دقيقة)، سيتم الإكمال بالصور المتاحة لتجنب التعليق...")
                       break
 
-                  completed_count = sum(1 for t in pending_tasks if t["status"] == "done")
+                  # حساب المكتمل والفاشل لضمان تقدم المؤشر وعدم توقفه
+                  completed_count = sum(1 for t in pending_tasks if t["status"] in ["done", "failed"])
                   progress_bar(completed_count, total_images_needed, "🎨 توليد وتحميل الصور المخصصة")
 
                   if completed_count >= total_images_needed:
                       break
 
-                  # إرسال الطلبات المعلقة (دفعات صغيرة لتجنب ضغط السيرفر)
                   jobs_submitted_this_round = 0
+                  # تحديد عدد الطلبات النشطة لتجنب حظر التزامن من API (Concurrency)
+                  processing_count = sum(1 for t in pending_tasks if t["status"] == "processing")
+
                   for t in pending_tasks:
-                      if t["status"] == "pending" and jobs_submitted_this_round < 15:
+                      if t["status"] == "pending" and processing_count < 5:
                           payload = {
                               "prompt": t["prompt"],
                               "params": {
@@ -443,21 +443,31 @@ jobs:
                                   "n": 1
                               },
                               "models": ["Deliberate"],
-                              "nsfw": False,        # أمر أمان
-                              "censor_nsfw": True   # أمر أمان لتشفير المحتوى العاري إن وجد
+                              "nsfw": False,
+                              "censor_nsfw": True
                           }
                           try:
                               response = requests.post(horde_url, json=payload, headers=headers, timeout=20)
-                              job = response.json()
-                              if "id" in job:
-                                  t["job_id"] = job["id"]
-                                  t["status"] = "processing"
-                                  jobs_submitted_this_round += 1
+                              if response.status_code in [200, 202]:
+                                  job = response.json()
+                                  if "id" in job:
+                                      t["job_id"] = job["id"]
+                                      t["status"] = "processing"
+                                      processing_count += 1
+                                      jobs_submitted_this_round += 1
+                                  else:
+                                      t["retries"] += 1
+                              else:
+                                  t["retries"] += 1
                           except:
-                              pass
+                              t["retries"] += 1
 
-                  # إذا لم يتم قبول أي طلب والكل قيد الانتظار، السيرفر مشغول
-                  if jobs_submitted_this_round == 0 and not any(t["status"] == "processing" for t in pending_tasks):
+                          # إذا فشل الطلب أكثر من 3 مرات نعتبره failed لكي يكمل السكربت
+                          if t["retries"] > 3:
+                              t["status"] = "failed"
+
+                  # إذا لم يتم قبول أي طلب والكل قيد الانتظار، ننتظر قليلاً
+                  if jobs_submitted_this_round == 0 and processing_count == 0:
                       time.sleep(5)
 
                   # فحص حالات الطلبات التي يتم معالجتها حالياً
@@ -465,30 +475,32 @@ jobs:
                       if t["status"] == "processing":
                           try:
                               check = requests.get(f"https://aihorde.net/api/v2/generate/status/{t['job_id']}", timeout=20)
-                              data = check.json()
-
-                              if data.get("done"):
-                                  img_path = f"horde_img_{t['task_idx']}.webp"
-                                  try:
-                                      # --- إصلاح تعليق التحميل عبر استخدام requests بمهلة زمنية (timeout) بدلا من urllib ---
-                                      img_res = requests.get(data["generations"][0]["img"], timeout=30)
-                                      if img_res.status_code == 200:
-                                          with open(img_path, 'wb') as f_img:
-                                              f_img.write(img_res.content)
-                                          t["img_path"] = img_path
-                                          t["status"] = "done"
-                                      else:
-                                          t["status"] = "pending"
-                                  except:
-                                      t["status"] = "pending" # إعادة المحاولة إذا فشل التحميل أو انتهى الوقت
-                              elif data.get("faulted"):
-                                  t["status"] = "pending" # إعادة إرسال الطلب المعطوب
+                              if check.status_code == 200:
+                                  data = check.json()
+                                  if data.get("done"):
+                                      img_path = f"horde_img_{t['task_idx']}.webp"
+                                      try:
+                                          img_url = data["generations"][0]["img"]
+                                          img_res = requests.get(img_url, timeout=30)
+                                          if img_res.status_code == 200:
+                                              with open(img_path, 'wb') as f_img:
+                                                  f_img.write(img_res.content)
+                                              t["img_path"] = img_path
+                                              t["status"] = "done"
+                                          else:
+                                              t["retries"] += 1
+                                              t["status"] = "pending" if t["retries"] <= 3 else "failed"
+                                      except:
+                                          t["retries"] += 1
+                                          t["status"] = "pending" if t["retries"] <= 3 else "failed"
+                                  elif data.get("faulted"):
+                                      t["retries"] += 1
+                                      t["status"] = "pending" if t["retries"] <= 3 else "failed"
                           except:
-                              pass
+                              pass # ننتظر الفحص القادم
 
-                  time.sleep(5) # انتظار بين كل فحص وآخر
+                  time.sleep(3) # فحص الحالات كل 3 ثواني لتسريع العملية
 
-              # تجميع مسارات الصور بنفس ترتيب المهام لضمان التزامن المثالي (مع التخطي لمن لم يكتمل بسبب التايم أوت)
               downloaded_images = [t["img_path"] for t in pending_tasks if t["img_path"] is not None]
               
               if not downloaded_images:
