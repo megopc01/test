@@ -36,13 +36,13 @@ jobs:
         run: |
           cat << 'EOF' > script.py
           # ==========================================
-          # 0. إعدادات البيئة
+          # 0. إعدادات بيئة الكروت (تم تنظيفها لتناسب المعالجة الجديدة)
           # ==========================================
           import os
           os.environ["SDL_VIDEODRIVER"] = "dummy"
 
           # ==========================================
-          # 1. تثبيت المكتبات
+          # 1. فحص وتثبيت المكتبات السريع (بدون مكتبات توليد الصور المحلية)
           # ==========================================
           import sys
           import subprocess
@@ -58,7 +58,7 @@ jobs:
                   return True
 
           if check_needs_install():
-              print("⏳ جاري التثبيت ...")
+              print("⏳ جاري التثبيت الصاروخي للمكتبات الأساسية...")
               os.system("sudo apt-get update -qq && sudo apt-get install -y ffmpeg > /dev/null 2>&1")
               os.system("pip uninstall -y pillow > /dev/null 2>&1")
               dependencies = [
@@ -68,12 +68,12 @@ jobs:
                   "google-auth-httplib2", "google-auth-oauthlib"
               ]
               subprocess.check_call([sys.executable, "-m", "pip", "install", "-q", "-U", "--prefer-binary"] + dependencies)
-              print("✅ تم تجهيز المكتبات")
+              print("✅ تم تجهيز المكتبات بنجاح!")
           else:
-              print("✅ المكتبات جاهزة")
+              print("✅ المكتبات مثبتة مسبقاً ومتوافقة، سيتم بدء العمل فوراً.")
 
           # ==========================================
-          # المكتبات الأساسية
+          # بداية السكريبت الأساسي (بعد التعديل - صورة واحدة لكل فيديو)
           # ==========================================
           import urllib.request
           import re
@@ -85,6 +85,7 @@ jobs:
           import urllib3
           import numpy as np
           import nest_asyncio
+          import arabic_reshaper
           import multiprocessing
           import concurrent.futures
           from bs4 import BeautifulSoup
@@ -92,46 +93,85 @@ jobs:
           from google.oauth2.credentials import Credentials
           from googleapiclient.discovery import build
           from googleapiclient.http import MediaFileUpload
+          from bidi.algorithm import get_display
           from PIL import Image
           from deep_translator import GoogleTranslator
-          from moviepy.editor import ImageClip, AudioFileClip, CompositeAudioClip
+          from moviepy.editor import ImageClip, AudioFileClip, concatenate_videoclips, CompositeAudioClip, VideoClip
           from proglog import ProgressBarLogger
 
-          urllib3.disable_warnings()
+          urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
           warnings.filterwarnings("ignore")
           nest_asyncio.apply()
 
-          # شريط تقدم
+          # --- دالة شريط التقدم النظيف والثابت ---
           def progress_bar(current, total, prefix=""):
               percent = int((current / float(total)) * 100) if total > 0 else 100
               bar = '█' * (percent // 5) + '-' * (20 - (percent // 5))
-              sys.stdout.write(f"\r{prefix} [{bar}] {percent}%")
+              sys.stdout.write(f"\r{prefix} [{bar}] {percent}% ({current}/{total})")
               sys.stdout.flush()
-              if current == total: sys.stdout.write("\n")
+              if current == total:
+                  sys.stdout.write("\n")
+                  sys.stdout.flush()
 
+          # --- كلاس الرندر النظيف ---
           class CleanRenderLogger(ProgressBarLogger):
               def callback(self, **changes):
                   for (message, value) in self.state.get('bars', {}).items():
                       if message == 't':
-                          progress_bar(value['index'], value['total'], "🚀 رندر")
+                          progress_bar(value['index'], value['total'], "🚀 جاري الرندر")
 
+          # --- إعدادات التحكم ---
           HISTORY_FILE = "shows_history.txt"
+          # ------------------------------
+
+          def log(message):
+              print(message)
+
+          def upload_to_catbox(file_path):
+              if not os.path.exists(file_path):
+                  print(f"❌ الملف غير موجود للرفع: {file_path}")
+                  return None
+              log(f"☁️ جاري رفع الفيديو كنسخة احتياطية على Catbox (برجاء الانتظار)...")
+              url = "https://catbox.moe/user/api.php"
+              data = {"reqtype": "fileupload"}
+              try:
+                  with open(file_path, "rb") as f:
+                      files = {"fileToUpload": f}
+                      response = requests.post(url, data=data, files=files, timeout=60)
+                      if response.status_code == 200:
+                          return response.text.strip()
+                      else:
+                          print(f"❌ خطأ من الخادم أثناء الرفع: الكود {response.status_code} - {response.text}")
+                          return None
+              except Exception as e:
+                  print(f"❌ حدث استثناء أثناء الرفع: {e}")
+                  return None
 
           def get_shows_list():
               urls = ["https://www.shorttv.live/ar", "https://netshort.com/ar", "https://www.goodshort.com/ar"]
-              headers = {"User-Agent": "Mozilla/5.0"}
-              all_shows = []
-              for url in urls:
+              headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+
+              def extract_shows(url):
                   try:
-                      r = requests.get(url, headers=headers, verify=False, timeout=15)
-                      soup = BeautifulSoup(r.text, 'html.parser')
-                      texts = [el.get_text(strip=True) for el in soup.find_all(['h3','div','p'])]
-                      for t in texts:
-                          clean = re.sub(r'[a-zA-Z]','',t)
-                          clean = " ".join(clean.split())
-                          if 5 < len(clean) <= 80 and ("مدبلج" in clean or "مترجم" in clean):
-                              all_shows.append(clean)
-                  except: pass
+                      response = requests.get(url, headers=headers, verify=False, timeout=20)
+                      response.raise_for_status()
+                      soup = BeautifulSoup(response.text, 'html.parser')
+                      raw_elements = [element.get_text(separator=' ', strip=True) for element in soup.find_all(['h3', 'div', 'p'])]
+                      cleaned_shows = []
+                      for text in raw_elements:
+                          clean_text = re.sub(r'[a-zA-Z]', '', text)
+                          clean_text = " ".join(clean_text.split())
+                          if (5 < len(clean_text) <= 80) and ("مدبلج" in clean_text or "مترجم" in clean_text):
+                              cleaned_shows.append(clean_text)
+                      return cleaned_shows
+                  except Exception as e:
+                      return []
+
+              all_shows = []
+              for i, target_url in enumerate(urls):
+                  progress_bar(i, len(urls), "🌐 جلب المسلسلات من المواقع")
+                  all_shows.extend(extract_shows(target_url))
+              progress_bar(len(urls), len(urls), "🌐 جلب المسلسلات من المواقع")
               return list(set(all_shows))
 
           translator = GoogleTranslator(source='ar', target='en')
@@ -139,218 +179,312 @@ jobs:
           from g4f.client import Client
           client = Client()
 
-          def safe_g4f_call(messages, max_tks=2000, timeout=90):
-              with concurrent.futures.ThreadPoolExecutor() as ex:
-                  return ex.submit(lambda: client.chat.completions.create(model="gpt-4", messages=messages, max_tokens=max_tks)).result(timeout=timeout)
+          def safe_g4f_call(messages_list, max_tks=4000, timeout_sec=180):
+              def _call():
+                  return client.chat.completions.create(
+                      model="gpt-4",
+                      messages=messages_list,
+                      max_tokens=max_tks
+                  )
+              with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                  future = executor.submit(_call)
+                  return future.result(timeout=timeout_sec)
 
           # ==========================================
-          # الحلقة الرئيسية - فيديو قصير (1-2 دقيقة)
+          # حلقة التكرار اللانهائية لإنتاج الفيديوهات (صورة واحدة لكل فيديو)
           # ==========================================
-          SCRIPT_START = time.time()
-          MAX_RUNTIME = 4 * 3600
+          SCRIPT_START_TIME = time.time()
+          MAX_RUNTIME_SECONDS = 4 * 60 * 60
 
           while True:
-              if time.time() - SCRIPT_START > MAX_RUNTIME:
-                  print("\n⏳ انتهت 4 ساعات، إعادة تشغيل...")
+              if time.time() - SCRIPT_START_TIME > MAX_RUNTIME_SECONDS:
+                  print("\n" + "="*60)
+                  print("⏳ اكتملت 4 ساعات من العمل المستمر. سيتم إنهاء الجلسة الحالية وبدء جلسة جديدة...")
+                  print("="*60)
                   break
 
-              print("\n🔄 بدء فيديو جديد (المدة المستهدفة 1-2 دقيقة)")
+              print("\n" + "="*60)
+              print("🔄 بدء دورة جديدة لإنتاج فيديو (صورة واحدة فقط)...")
+              print("="*60)
 
-              shows = get_shows_list()
-              if not shows:
+              shows_list = get_shows_list()
+              if not shows_list:
+                  print("❌ لم يتم العثور على مسلسلات، سيتم الانتظار 30 ثانية والمحاولة مجدداً.")
                   time.sleep(30)
                   continue
 
-              # اختيار موضوع جديد
-              used = {}
+              used_history = {}
               if os.path.exists(HISTORY_FILE):
-                  with open(HISTORY_FILE,'r',encoding='utf-8') as f:
+                  with open(HISTORY_FILE, "r", encoding="utf-8") as f:
                       for line in f:
                           parts = line.strip().split('|')
-                          if len(parts)==2: used[parts[0]] = datetime.strptime(parts[1],"%Y-%m-%d")
-              target = None
-              week_ago = datetime.now() - timedelta(days=7)
-              for s in shows:
-                  if s not in used or used[s] < week_ago:
-                      target = s
+                          if len(parts) == 2:
+                              used_history[parts[0]] = datetime.strptime(parts[1], "%Y-%m-%d")
+
+              target_topic = None
+              seven_days_ago = datetime.now() - timedelta(days=7)
+              for show in shows_list:
+                  if show not in used_history or used_history[show] < seven_days_ago:
+                      target_topic = show
                       break
-              if not target:
+
+              if not target_topic:
+                  print("❌ لا يوجد مسلسلات متاحة حالياً. سيتم الانتظار 30 ثانية والمحاولة مجدداً.")
                   time.sleep(30)
                   continue
 
-              topic = target
-              print(f"🎬 الموضوع: {topic}")
+              topic = target_topic
+              title = topic if topic.strip() != "" else "سلسلة درامية مشوقة"
 
-              # ---------- 1. قصة قصيرة (10-15 جملة فقط) ----------
-              print("[1/5] ✍️ كتابة قصة قصيرة...")
-              prompt = f"""اكتب قصة قصيرة جداً عن مسلسل '{topic}'، لا تزيد عن 15 جملة، كل جملة من 5 إلى 12 كلمة، بدون مقدمات، عربية فقط، واقعية ومشوقة. ابدأ مباشرة."""
-              story = ""
-              try:
-                  resp = safe_g4f_call([{"role":"user","content":prompt}], 2000, 90)
-                  story = resp.choices[0].message.content.strip()
-              except:
-                  story = "في بلد بعيد كان هناك سر عظيم. اكتشفه البطل فغير حياته. واجه أعداء وتغلب عليهم. في النهاية حقق العدالة."
-              # تقسيم لجمل
-              sentences = [s.strip() for s in re.split(r'[.\n]+', story) if len(s.strip()) > 15]
-              if len(sentences) > 15:
-                  sentences = sentences[:15]
-              if len(sentences) < 4:
-                  sentences = ["كان هناك مسلسل مشوق.", "أحداثه مليئة بالإثارة.", "البطل يواجه التحديات.", "وينتصر في النهاية."]
-              print(f"✅ {len(sentences)} جملة")
+              print("\n" + "-"*50)
+              log(f"🎬 المسلسل المستهدف: {topic}")
+              print("-"*50)
 
-              # ---------- 2. شخصيات (اختياري) ----------
-              print("[2/5] 👤 استخراج الشخصيات...")
-              chars = {}
+              # ==========================================
+              # 1. كتابة القصة
+              # ==========================================
+              print(f"\n[1/5] 📝 جاري كتابة القصة بالذكاء الاصطناعي...")
+              prompt_text = f"""اكتب قصة عن مسلسل '{topic}' بأسلوب سردي مباشر وبدون أي مقدمات، يشبه هذا النمط تماماً: "في ليلة اكتمل فيها القمر ببريق أرجواني نادر، لاحظ ساهر أن انعكاس ضوء القمر على مفتاحه يرسم خريطة باهتة على صخور الجبل الأصم. تبع الخريطة حتى وصل إلى باب صخري مخفي خلف شلال من الماء الساكن الذي لا يتحرك. لم يكن للباب قفل، بل كان به ثقب صغير يتسع لمئات المفاتيح معاً. ركض ساهر عائداً وأيقظ أهل القرية، طلب منهم أن يضعوا مفاتيحهم جميعاً في تجويف الباب. في البداية سخروا منه، لكن حين وضع هو مفتاحه وبدأ الحجر يضيء، تدافع الجميع لوضع مفاتيحهم. ومع وضع آخر مفتاح، لم ينفتح الباب للخارج، بل تحولت الصخور إلى بوابة من الضوء الخالص."
+
+          شروط إجبارية لا غنى عنها لتطبيقها على قصة '{topic}':
+          1- سرد القصة بنمط متواصل ودقة واقعية
+          2- عدد كلمات كل جملة يتكون من 5 إلى 15 كلمة وكل 5 إلى 10 كلمات يتم وضع فاصلة ، 
+          3- لاتكتب مقدمات او ردود قم بسرد القصة مباشر
+          4- القصة تبقي مترابطة الاحداث والفواصل تتكون من 5 إلى 10 كلمة
+          5- ممنوع تماماً استخدام أي كلمة أو حرف إنجليزي.
+          6- ابحث عن قصة المسلسل الحقيقية واستخدمها لتوليد هذا الهيكل والمحطات، وإن لم تجدها ألف ملحمة درامية مذهلة.
+          7- ممنوع استخدام الرموز أو الأقواس (استخدم الفواصل فقط).
+          8- ادخل في أحداث القصة مباشرة بدون أي كلمات افتتاحية أو مقدمات."""
+
+              raw_story = ""
               try:
-                  cp = f"استخرج أسماء الشخصيات من هذه القصة وصفاً مختصراً بالإنجليزية:\n{story[:2000]}"
-                  cr = safe_g4f_call([{"role":"user","content":cp}], 1500, 60)
-                  for line in cr.choices[0].message.content.strip().split('\n'):
+                  response = safe_g4f_call([{"role": "user", "content": prompt_text}], 4000, 180)
+                  raw_story = response.choices[0].message.content.strip()
+                  expand_count = 0
+                  while len(raw_story.split('\n')) < 50 and expand_count < 20:
+                      extend_prompt = "أكمل القصة من حيث توقفت بأسلوب السرد المباشر والمشوق والمحطات. التزم بالشروط السابقة (بدون مقدمات، بدون تكرار)."
+                      msgs = [
+                          {"role": "user", "content": prompt_text},
+                          {"role": "assistant", "content": raw_story[-2000:]},
+                          {"role": "user", "content": extend_prompt}
+                      ]
+                      response_ext = safe_g4f_call(msgs, 4000, 180)
+                      raw_story += "\n\n" + response_ext.choices[0].message.content.strip()
+                      expand_count += 1
+              except Exception as e:
+                  if len(raw_story) < 50:
+                      raw_story = f"في عالم مليء بالأسرار والغموض يظهر بطلنا ليغير مجرى الأحداث تماماً ويبدأ رحلته الشاقة نحو المجهول متحدياً الصعاب التي تقف في طريقه.\n\nتتصاعد التوترات وتتشابك الخيوط وتنكشف حقائق لم تكن في الحسبان مما يدفع الجميع لاتخاذ قرارات مصيرية لا رجعة فيها."
+                  print(f"⚠️ حدثت مشكلة أثناء الكتابة، سيتم استخدام المستخرج: {e}")
+
+              raw_story = raw_story.replace('*', '').replace('#', '').replace('_', '').replace('"', '').replace('(', '').replace(')', '')
+              full_sentences = [s.strip() for s in re.split(r'\n+', raw_story) if len(s.strip()) > 20]
+              if len(full_sentences) < 3:
+                  full_sentences = [s.strip() for s in raw_story.split('.') if len(s.strip()) > 20]
+              print(f"✅ تمت كتابة القصة وتجهيز {len(full_sentences)} فصل/جملة.")
+
+              # ==========================================
+              # 2. استخراج الشخصيات
+              # ==========================================
+              print("\n[2/5] 👤 جاري استخراج ملامح الشخصيات...")
+              sys.stdout.flush()
+              char_extraction_prompt = f"""اقرأ القصة واستخرج أسماء الشخصيات. ابتكر لكل شخصية وصفاً جسدياً دقيقاً باللغة الإنجليزية. الرد سطور (الاسم بالعربي: الوصف بالإنجليزي). القصة:\n{raw_story[:4000]}"""
+              character_map = {}
+              try:
+                  char_response = safe_g4f_call([{"role": "user", "content": char_extraction_prompt}], 4000, 120)
+                  for line in char_response.choices[0].message.content.strip().split('\n'):
                       if ':' in line:
-                          k,v = line.split(':',1)
-                          chars[k.strip()] = v.strip()
-              except: pass
+                          ar_name, en_desc = line.split(':', 1)
+                          character_map[ar_name.replace('*', '').replace('-', '').strip()] = en_desc.strip()
+              except:
+                  pass
+              print("✅ تم استخراج الشخصيات بنجاح.")
 
-              # ---------- 3. صوت قصير (المدة الإجمالية 1-2 دقيقة) ----------
-              print("[3/5] 🎙️ توليد الصوت...")
-              audio_clips = []
-              target_duration = 90  # ثانية (1.5 دقيقة وسطياً)
-              # سنتحكم بعدد الجمل لتحقيق المدة: كل جملة حوالي 4-6 ثوانٍ → 15-20 جملة تكفي
-              # لكننا سنستخدم سرعة الصوت +20% لجعلها أسرع قليلاً
-              for i, sent in enumerate(sentences):
-                  progress_bar(i, len(sentences), "🎙️ صوت")
-                  audio_file = f"a{i}.mp3"
-                  for attempt in range(2):
+              # ==========================================
+              # 3. إعداد الصوت فقط (بدون مهام صور)
+              # ==========================================
+              print("\n[3/5] 🎙️ جاري توليد الصوتيات فقط...")
+              audio_clips_list = []
+              for i, chapter in enumerate(full_sentences):
+                  progress_bar(i, len(full_sentences), "🎙️ معالجة وتحويل الصوت")
+                  audio_path = f"audio_{i}.mp3"
+                  current_voice = "ar-BH-AliNeural"
+                  current_speed = "-8%"
+                  audio_success = False
+                  for attempt in range(3):
                       try:
-                          subprocess.run(["edge-tts","--text",sent,"--voice","ar-BH-AliNeural","--rate=+10%","--write-media",audio_file],
-                                         check=True, capture_output=True, timeout=30)
-                          if os.path.exists(audio_file):
-                              clip = AudioFileClip(audio_file)
-                              audio_clips.append(clip)
+                          subprocess.run(
+                              ["edge-tts", "--text", chapter, "--voice", current_voice, f"--rate={current_speed}", "--write-media", audio_path],
+                              check=True, capture_output=True, timeout=40
+                          )
+                          if os.path.exists(audio_path):
+                              audio_success = True
                               break
-                      except: pass
-                      time.sleep(1)
-              progress_bar(len(sentences), len(sentences), "🎙️ صوت")
-              if not audio_clips:
-                  continue
-              total_dur = sum(c.duration for c in audio_clips)
-              print(f"⏱️ المدة الصوتية: {total_dur:.1f} ثانية")
-              # إذا كانت المدة أقل من 45 ثانية أو أكثر من 130 ثانية، نعدل السرعة
-              if total_dur < 45:
-                  # نكرر بعض الجمل أو نضيف موسيقى؟ نكتفي بزيادة السرعة
-                  pass
-              elif total_dur > 130:
-                  # نقصص عدد الجمل
-                  pass
+                      except:
+                          pass
+                      time.sleep(2)
+                  if not audio_success:
+                      continue
+                  chapter_audio = AudioFileClip(audio_path)
+                  audio_clips_list.append(chapter_audio)
+              progress_bar(len(full_sentences), len(full_sentences), "🎙️ معالجة وتحويل الصوت")
 
-              # ---------- 4. صورة واحدة ----------
-              print("[4/5] 🎨 توليد صورة واحدة...")
-              eng_summary = translator.translate(story[:1500]) if story else "dramatic scene"
-              char_desc = ", ".join(chars.values()) if chars else "characters"
-              prompt_img = f"{eng_summary}, cinematic, ultra realistic, featuring {char_desc}"
-              img_path = None
+              if not audio_clips_list:
+                  print("❌ لم يتم توليد أي صوت، سيتم تخطي هذا الفيديو.")
+                  continue
+
+              # ترجمة القصة كاملة لوصف الصورة الواحدة
+              print("\n🌍 جاري ترجمة القصة لوصف الصورة...")
+              full_story_english = translator.translate(raw_story[:3000])
+              chars_desc = ", ".join(character_map.values()) if character_map else "شخصيات غامضة"
+
+              # ==========================================
+              # 4. توليد صورة واحدة فقط من AI Horde
+              # ==========================================
+              print("\n[4/5] 🎨 جاري طلب صورة واحدة من AI Horde...")
+              negative_prompt = "nsfw, nude, naked, nudity, explicit, adult, porn, cartoon, anime, 3d, sketches, worst quality, low quality, deformed, ugly, bad anatomy, bad hands, text, error, blurry, mutation"
+              horde_url = "https://aihorde.net/api/v2/generate/async"
+              headers = {"apikey": "0ENZZBFOx-U1PwqJY_n-FQ", "Content-Type": "application/json"}
+
+              master_prompt = f"{full_story_english}, ultra realistic, cinematic lighting, 8k, masterpiece, featuring {chars_desc}"
+              payload = {
+                  "prompt": f"{master_prompt} ### {negative_prompt}",
+                  "params": {"cfg_scale": 7.5, "width": 512, "height": 512, "steps": 30, "sampler_name": "k_euler_a", "n": 1},
+                  "models": ["Deliberate"],
+                  "nsfw": False,
+                  "censor_nsfw": True
+              }
+
+              single_img_path = None
               try:
-                  import base64
-                  horde_url = "https://aihorde.net/api/v2/generate/async"
-                  headers = {"apikey": "0ENZZBFOx-U1PwqJY_n-FQ", "Content-Type":"application/json"}
-                  payload = {
-                      "prompt": f"{prompt_img} ### nsfw, ugly, blurry",
-                      "params": {"width":512,"height":512,"steps":25,"cfg_scale":7},
-                      "models": ["Deliberate"],
-                      "nsfw": False
-                  }
-                  r = requests.post(horde_url, json=payload, headers=headers, timeout=20)
-                  if r.status_code in (200,202):
-                      job = r.json().get("id")
-                      if job:
-                          for _ in range(40):
-                              time.sleep(4)
-                              stat = requests.get(f"https://aihorde.net/api/v2/generate/status/{job}", timeout=15)
-                              if stat.status_code == 200:
-                                  data = stat.json()
+                  response = requests.post(horde_url, json=payload, headers=headers, timeout=30)
+                  if response.status_code in [200, 202]:
+                      job_id = response.json().get("id")
+                      if job_id:
+                          print("⏳ انتظار اكتمال الصورة...")
+                          for _ in range(60):
+                              time.sleep(5)
+                              status_resp = requests.get(f"https://aihorde.net/api/v2/generate/status/{job_id}", timeout=20)
+                              if status_resp.status_code == 200:
+                                  data = status_resp.json()
                                   if data.get("done"):
                                       img_url = data["generations"][0]["img"]
                                       img_data = requests.get(img_url, timeout=30)
                                       if img_data.status_code == 200:
-                                          img_path = "cover.webp"
-                                          with open(img_path,"wb") as f:
+                                          single_img_path = "single_image.webp"
+                                          with open(single_img_path, "wb") as f:
                                               f.write(img_data.content)
-                                          print("✅ صورة جاهزة")
+                                          print("✅ تم تحميل الصورة الواحدة بنجاح!")
                                           break
-                                  elif data.get("faulted"): break
+                                  elif data.get("faulted"):
+                                      print("⚠️ فشل توليد الصورة")
+                                      break
               except Exception as e:
-                  print(f"⚠️ فشل الصورة: {e}")
-              if not img_path or not os.path.exists(img_path):
-                  img_path = "fallback.webp"
-                  Image.new('RGB',(512,512),color='black').save(img_path)
+                  print(f"⚠️ خطأ في طلب الصورة: {e}")
 
-              # ---------- 5. تركيب الفيديو ----------
-              print("[5/5] 🎬 تركيب الفيديو...")
-              from moviepy.editor import ImageClip
-              # تجهيز الصورة
-              img_pil = Image.open(img_path).convert("RGB")
-              target_w, target_h = 1280, 720
-              img_pil.thumbnail((target_w*2, target_h*2), Image.Resampling.LANCZOS)
-              # قص للوسط
-              w,h = img_pil.size
-              left = (w - target_w)//2
-              top = (h - target_h)//2
-              img_cropped = img_pil.crop((left, top, left+target_w, top+target_h))
-              img_array = np.array(img_cropped)
+              if not single_img_path or not os.path.exists(single_img_path):
+                  print("⚠️ استخدام صورة احتياطية سوداء")
+                  single_img_path = "fallback.webp"
+                  if not os.path.exists(single_img_path):
+                      img = Image.new('RGB', (512, 512), color='black')
+                      img.save(single_img_path)
 
-              video = ImageClip(img_array).set_duration(total_dur)
-              final_audio = CompositeAudioClip(audio_clips)
-              video = video.set_audio(final_audio)
+              # ==========================================
+              # 5. تجميع الفيديو بصورة واحدة طوال المدة
+              # ==========================================
+              print("\n[5/5] 🎬 تجميع الفيديو بصورة واحدة ثابتة...")
 
-              out_file = "short_video.mp4"
-              video.write_videofile(out_file, fps=15, codec="libx264", audio_codec="aac",
-                                    preset="ultrafast", threads=multiprocessing.cpu_count(),
-                                    logger=CleanRenderLogger())
-              print("✅ تم الرندر")
+              def prepare_static_image(img_path):
+                  img_pil = Image.open(img_path).convert("RGB")
+                  base_w, base_h = 1280, 720
+                  img_w, img_h = img_pil.size
+                  ratio = max(base_w/img_w, base_h/img_h)
+                  new_w, new_h = int(img_w * ratio), int(img_h * ratio)
+                  img_resized = img_pil.resize((new_w, new_h), Image.Resampling.BILINEAR)
+                  left = (new_w - base_w) // 2
+                  top = (new_h - base_h) // 2
+                  final_img = img_resized.crop((left, top, left + base_w, top + base_h))
+                  return np.array(final_img)
 
-              # رفع ليوتيوب
-              print("[6/6] 📤 رفع ليوتيوب...")
+              img_array = prepare_static_image(single_img_path)
+              total_duration = sum(c.duration for c in audio_clips_list)
+
+              video_clip = ImageClip(img_array).set_duration(total_duration)
+              final_audio = CompositeAudioClip(audio_clips_list)
+              final_clip = video_clip.set_audio(final_audio)
+
+              final_v = "final_story.mp4"
+              cpu_cores = multiprocessing.cpu_count()
+              custom_logger = CleanRenderLogger()
+              final_clip.write_videofile(
+                  final_v,
+                  fps=15,
+                  codec="libx264",
+                  audio_codec="aac",
+                  preset="ultrafast",
+                  threads=cpu_cores,
+                  logger=custom_logger
+              )
+
+              final_clip.close()
+              for c in audio_clips_list:
+                  c.close()
+              gc.collect()
+              print("✅ تم الانتهاء من رندر الفيديو بنجاح!")
+
+              catbox_url = upload_to_catbox(final_v)
+              if catbox_url:
+                  print(f"✅ رابط Catbox: {catbox_url}")
+
+              print("\n[6/6] 📤 جاري الرفع إلى يوتيوب (يرجى الانتظار حتى تكتمل العملية)...")
               try:
                   if 'YOUTUBE_CREDENTIALS' in os.environ:
-                      creds_json = os.environ['YOUTUBE_CREDENTIALS']
-                      creds_data = json.loads(creds_json)   # مباشرة من البيئة
+                      creds_data = json.loads(os.environ['YOUTUBE_CREDENTIALS'])
                       creds = Credentials.from_authorized_user_info(creds_data)
                       youtube = build('youtube', 'v3', credentials=creds)
-                      title_vid = f"{topic} - ملخص قصير"[:90]
+                      video_number = len(open(HISTORY_FILE).readlines()) if os.path.exists(HISTORY_FILE) else 1
+                      raw_yt_title = f"{title} السلسلة الكاملة والمدبلجة بالعربي "
+                      if not raw_yt_title.strip():
+                          raw_yt_title = f"#{video_number}"
+                      if len(raw_yt_title) > 95:
+                          raw_yt_title = raw_yt_title[:95] + "..."
                       body = {
-                          'snippet': {'title': title_vid, 'description': f'قصة مسلسل {topic}', 'categoryId':'24'},
-                          'status': {'privacyStatus':'public', 'selfDeclaredMadeForKids':False}
+                          'snippet': {'title': raw_yt_title, 'description': f'ملخص ومراجعة مسلسل {topic}', 'categoryId': '24'},
+                          'status': {'privacyStatus': 'public', 'selfDeclaredMadeForKids': False}
                       }
-                      media = MediaFileUpload(out_file, chunksize=-1, resumable=True)
+                      media = MediaFileUpload(final_v, chunksize=-1, resumable=True)
                       response = youtube.videos().insert(part=','.join(body.keys()), body=body, media_body=media).execute()
-                      print(f"✅ يوتيوب: https://www.youtube.com/watch?v={response['id']}")
-                      with open(HISTORY_FILE,'a',encoding='utf-8') as f:
+                      print(f"✅ تم الرفع ليوتيوب بنجاح: https://www.youtube.com/watch?v={response['id']}")
+                      with open(HISTORY_FILE, "a", encoding="utf-8") as f:
                           f.write(f"{topic}|{datetime.now().strftime('%Y-%m-%d')}\n")
-                  else:
-                      print("⚠️ لا يوجد YOUTUBE_CREDENTIALS في البيئة")
               except Exception as e:
-                  print(f"❌ فشل الرفع: {e}")
+                  print(f"❌ فشل يوتيوب: {e}")
 
-              # تنظيف
               for f in os.listdir():
-                  if f.endswith(('.mp3','.webp','.mp4')) and f != 'fallback.webp':
-                      try: os.remove(f)
-                      except: pass
-              print("⏳ انتظار 30 ثانية قبل الفيديو التالي")
-              time.sleep(30)
+                  if f.endswith((".mp3", ".wav", ".jpg", ".webp")) and f != "fallback.webp":
+                      try:
+                          os.remove(f)
+                      except:
+                          pass
 
+              print("\n" + "="*50)
+              print(f"✅ تم الانتهاء بنجاح من مسلسل: {topic}!")
+              print("⏳ جاري الانتظار 60 ثانية قبل البدء في إنتاج الفيديو التالي...")
+              print("="*50)
+              time.sleep(60)
           EOF
           python script.py
 
-      - name: 💾 Commit History
+      - name: 💾 Commit History to Repository
         run: |
           git config --global user.name "github-actions[bot]"
-          git config --global user.email "bot@github.com"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
           git add shows_history.txt || true
-          git commit -m "Update history" || true
+          git commit -m "📝 Update trends history" || true
           git push || true
 
-      - name: ⏳ Auto-restart
+      - name: ⏳ Workflow Persistence (Auto-restart)
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          echo "جاري إعادة تشغيل الأكشن لضمان العمل المستمر (Perpetual Dual)..."
           gh workflow run "Perpetual Dual" --ref ${{ github.ref_name }}
