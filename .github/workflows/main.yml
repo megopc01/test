@@ -32,6 +32,7 @@ jobs:
 
       - name: 🚀 Create and Run Script
         env:
+          # سحب التوكن من الـ Secrets في المستودع وإعطائه للسكربت
           YOUTUBE_CREDENTIALS: ${{ secrets.YOUTUBE_CREDENTIALS }}
         run: |
           cat << 'EOF' > script.py
@@ -52,6 +53,7 @@ jobs:
               try:
                   if importlib.metadata.version("moviepy") != "1.0.3": return True
                   importlib.metadata.version("edge_tts")
+                  # فحص إصدار Pillow للتأكد من أنه الإصدار المستقر الذي نريده
                   if importlib.metadata.version("pillow") != "10.2.0": return True
                   return False
               except importlib.metadata.PackageNotFoundError:
@@ -60,7 +62,11 @@ jobs:
           if check_needs_install():
               print("⏳ جاري التثبيت الصاروخي للمكتبات الأساسية...")
               os.system("sudo apt-get update -qq && sudo apt-get install -y ffmpeg > /dev/null 2>&1")
+
+              # تنظيف النظام من أي نسخة Pillow معطوبة مسبقاً لحل مشكلة _Ink
               os.system("pip uninstall -y pillow > /dev/null 2>&1")
+
+              # تم تحديد إصدار pillow==10.2.0 لحل مشكلة الاستيراد
               dependencies = [
                   "moviepy==1.0.3", "edge-tts", "deep-translator",
                   "g4f", "curl_cffi", "nest_asyncio", "arabic-reshaper", "python-bidi",
@@ -68,12 +74,13 @@ jobs:
                   "google-auth-httplib2", "google-auth-oauthlib"
               ]
               subprocess.check_call([sys.executable, "-m", "pip", "install", "-q", "-U", "--prefer-binary"] + dependencies)
+
               print("✅ تم تجهيز المكتبات بنجاح!")
           else:
               print("✅ المكتبات مثبتة مسبقاً ومتوافقة، سيتم بدء العمل فوراً.")
 
           # ==========================================
-          # بداية السكريبت الأساسي (بعد التعديل - صورة واحدة لكل فيديو)
+          # بداية السكريبت الأساسي
           # ==========================================
           import urllib.request
           import re
@@ -103,21 +110,22 @@ jobs:
           warnings.filterwarnings("ignore")
           nest_asyncio.apply()
 
-          # --- دالة شريط التقدم النظيف والثابت ---
+          # --- دالة شريط التقدم النظيف والثابت (لحل مشكلة السطور المزعجة) ---
           def progress_bar(current, total, prefix=""):
               percent = int((current / float(total)) * 100) if total > 0 else 100
               bar = '█' * (percent // 5) + '-' * (20 - (percent // 5))
+              # يكتب في نفس السطر دائماً
               sys.stdout.write(f"\r{prefix} [{bar}] {percent}% ({current}/{total})")
               sys.stdout.flush()
               if current == total:
                   sys.stdout.write("\n")
                   sys.stdout.flush()
 
-          # --- كلاس الرندر النظيف ---
+          # --- كلاس الرندر النظيف (لربط MoviePy بشريط التقدم الخاص بنا) ---
           class CleanRenderLogger(ProgressBarLogger):
               def callback(self, **changes):
                   for (message, value) in self.state.get('bars', {}).items():
-                      if message == 't':
+                      if message == 't': # 't' هو المتغير الذي يعبر عن الإطارات في MoviePy
                           progress_bar(value['index'], value['total'], "🚀 جاري الرندر")
 
           # --- إعدادات التحكم ---
@@ -157,6 +165,7 @@ jobs:
                       response.raise_for_status()
                       soup = BeautifulSoup(response.text, 'html.parser')
                       raw_elements = [element.get_text(separator=' ', strip=True) for element in soup.find_all(['h3', 'div', 'p'])]
+
                       cleaned_shows = []
                       for text in raw_elements:
                           clean_text = re.sub(r'[a-zA-Z]', '', text)
@@ -168,6 +177,7 @@ jobs:
                       return []
 
               all_shows = []
+              # شريط تقدم نظيف لفحص المواقع
               for i, target_url in enumerate(urls):
                   progress_bar(i, len(urls), "🌐 جلب المسلسلات من المواقع")
                   all_shows.extend(extract_shows(target_url))
@@ -179,6 +189,7 @@ jobs:
           from g4f.client import Client
           client = Client()
 
+          # --- دالة مخصصة لعمل طلبات g4f مع مهلة زمنية (Timeout) لتجنب التعليق النهائي ---
           def safe_g4f_call(messages_list, max_tks=4000, timeout_sec=180):
               def _call():
                   return client.chat.completions.create(
@@ -191,12 +202,13 @@ jobs:
                   return future.result(timeout=timeout_sec)
 
           # ==========================================
-          # حلقة التكرار اللانهائية لإنتاج الفيديوهات (صورة واحدة لكل فيديو)
+          # حلقة التكرار اللانهائية لإنتاج الفيديوهات تباعاً
           # ==========================================
           SCRIPT_START_TIME = time.time()
-          MAX_RUNTIME_SECONDS = 4 * 60 * 60
+          MAX_RUNTIME_SECONDS = 4 * 60 * 60 # 4 ساعات بالثواني
 
           while True:
+              # التحقق من مرور 4 ساعات لإنهاء الجلسة وبدء جلسة جديدة
               if time.time() - SCRIPT_START_TIME > MAX_RUNTIME_SECONDS:
                   print("\n" + "="*60)
                   print("⏳ اكتملت 4 ساعات من العمل المستمر. سيتم إنهاء الجلسة الحالية وبدء جلسة جديدة...")
@@ -204,10 +216,11 @@ jobs:
                   break
 
               print("\n" + "="*60)
-              print("🔄 بدء دورة جديدة لإنتاج فيديو (صورة واحدة فقط)...")
+              print("🔄 بدء دورة جديدة لإنتاج فيديو...")
               print("="*60)
 
               shows_list = get_shows_list()
+
               if not shows_list:
                   print("❌ لم يتم العثور على مسلسلات، سيتم الانتظار 30 ثانية والمحاولة مجدداً.")
                   time.sleep(30)
@@ -223,6 +236,7 @@ jobs:
 
               target_topic = None
               seven_days_ago = datetime.now() - timedelta(days=7)
+
               for show in shows_list:
                   if show not in used_history or used_history[show] < seven_days_ago:
                       target_topic = show
@@ -234,7 +248,9 @@ jobs:
                   continue
 
               topic = target_topic
-              title = topic if topic.strip() != "" else "سلسلة درامية مشوقة"
+              title = topic
+              if not title or title.strip() == "":
+                  title = "سلسلة درامية مشوقة"
 
               print("\n" + "-"*50)
               log(f"🎬 المسلسل المستهدف: {topic}")
@@ -248,9 +264,9 @@ jobs:
 
           شروط إجبارية لا غنى عنها لتطبيقها على قصة '{topic}':
           1- سرد القصة بنمط متواصل ودقة واقعية
-          2- عدد كلمات كل جملة يتكون من 5 إلى 15 كلمة وكل 5 إلى 10 كلمات يتم وضع فاصلة ، 
+          2- عدد كلمات كل جملة يتكون من  الي  كلمة وكل  الي  كلمة يتم وضع فاصلة ، 
           3- لاتكتب مقدمات او ردود قم بسرد القصة مباشر
-          4- القصة تبقي مترابطة الاحداث والفواصل تتكون من 5 إلى 10 كلمة
+          4- القصة تبقي مترابطة الاحداث والفواصل تتكون من  الي  كلمة
           5- ممنوع تماماً استخدام أي كلمة أو حرف إنجليزي.
           6- ابحث عن قصة المسلسل الحقيقية واستخدمها لتوليد هذا الهيكل والمحطات، وإن لم تجدها ألف ملحمة درامية مذهلة.
           7- ممنوع استخدام الرموز أو الأقواس (استخدم الفواصل فقط).
@@ -260,9 +276,11 @@ jobs:
               try:
                   response = safe_g4f_call([{"role": "user", "content": prompt_text}], 4000, 180)
                   raw_story = response.choices[0].message.content.strip()
+
                   expand_count = 0
+                  # التمديد يتم بناءً على عدد الفصول (الأسطر الجديدة) وليس الجمل القصيرة
                   while len(raw_story.split('\n')) < 50 and expand_count < 20:
-                      extend_prompt = "أكمل القصة من حيث توقفت بأسلوب السرد المباشر والمشوق والمحطات. التزم بالشروط السابقة (بدون مقدمات، بدون تكرار)."
+                      extend_prompt = "أكمل القصة من حيث توقفت بأسلوب السرد المباشر والمشوق والمحطات. التزم بالشروط السابقة السرد المباشر بدون مقدمات، بدون تكرار)."
                       msgs = [
                           {"role": "user", "content": prompt_text},
                           {"role": "assistant", "content": raw_story[-2000:]},
@@ -271,22 +289,27 @@ jobs:
                       response_ext = safe_g4f_call(msgs, 4000, 180)
                       raw_story += "\n\n" + response_ext.choices[0].message.content.strip()
                       expand_count += 1
+
               except Exception as e:
                   if len(raw_story) < 50:
                       raw_story = f"في عالم مليء بالأسرار والغموض يظهر بطلنا ليغير مجرى الأحداث تماماً ويبدأ رحلته الشاقة نحو المجهول متحدياً الصعاب التي تقف في طريقه.\n\nتتصاعد التوترات وتتشابك الخيوط وتنكشف حقائق لم تكن في الحسبان مما يدفع الجميع لاتخاذ قرارات مصيرية لا رجعة فيها."
                   print(f"⚠️ حدثت مشكلة أثناء الكتابة، سيتم استخدام المستخرج: {e}")
 
               raw_story = raw_story.replace('*', '').replace('#', '').replace('_', '').replace('"', '').replace('(', '').replace(')', '')
+
+              # تحويل القصة إلى فصول (فقرات كاملة / جمل مفصولة)
               full_sentences = [s.strip() for s in re.split(r'\n+', raw_story) if len(s.strip()) > 20]
+
               if len(full_sentences) < 3:
                   full_sentences = [s.strip() for s in raw_story.split('.') if len(s.strip()) > 20]
+
               print(f"✅ تمت كتابة القصة وتجهيز {len(full_sentences)} فصل/جملة.")
 
               # ==========================================
               # 2. استخراج الشخصيات
               # ==========================================
               print("\n[2/5] 👤 جاري استخراج ملامح الشخصيات...")
-              sys.stdout.flush()
+              sys.stdout.flush() # تفريغ المتغيرات لضمان طباعة النص
               char_extraction_prompt = f"""اقرأ القصة واستخرج أسماء الشخصيات. ابتكر لكل شخصية وصفاً جسدياً دقيقاً باللغة الإنجليزية. الرد سطور (الاسم بالعربي: الوصف بالإنجليزي). القصة:\n{raw_story[:4000]}"""
               character_map = {}
               try:
@@ -295,22 +318,28 @@ jobs:
                       if ':' in line:
                           ar_name, en_desc = line.split(':', 1)
                           character_map[ar_name.replace('*', '').replace('-', '').strip()] = en_desc.strip()
-              except:
-                  pass
+              except: pass
               print("✅ تم استخراج الشخصيات بنجاح.")
 
               # ==========================================
-              # 3. إعداد الصوت فقط (بدون مهام صور)
+              # 3. إعداد الصوت والصور المطلوبة
               # ==========================================
-              print("\n[3/5] 🎙️ جاري توليد الصوتيات فقط...")
+              print("\n[3/5] 🎙️ جاري توليد الصوتيات وتجهيز مهام الصور بناءً على ترجمة الفقرات...")
+              image_tasks = []
               audio_clips_list = []
+
+              # شريط تقدم نظيف للصوتيات
               for i, chapter in enumerate(full_sentences):
-                  progress_bar(i, len(full_sentences), "🎙️ معالجة وتحويل الصوت")
+                  progress_bar(i, len(full_sentences), "🎙️ معالجة وتحويل الصوت والترجمة")
                   audio_path = f"audio_{i}.mp3"
+
+                  # توحيد صوت المعلق ليكون صوتاً واحداً ثابتاً للقصة كلها
                   current_voice = "ar-BH-AliNeural"
                   current_speed = "-8%"
+
+                  # --- إصلاح مشكلة التعليق في الصوت عن طريق إضافة مهلة زمنية (Timeout) وتخطي الأخطاء ---
                   audio_success = False
-                  for attempt in range(3):
+                  for attempt in range(3): # المحاولة 3 مرات
                       try:
                           subprocess.run(
                               ["edge-tts", "--text", chapter, "--voice", current_voice, f"--rate={current_speed}", "--write-media", audio_path],
@@ -319,79 +348,171 @@ jobs:
                           if os.path.exists(audio_path):
                               audio_success = True
                               break
-                      except:
+                      except subprocess.TimeoutExpired:
+                          pass # تجاهل محاولة الانتظار اللانهائي
+                      except Exception:
                           pass
                       time.sleep(2)
+                  
                   if not audio_success:
+                      # إذا فشل الصوت تماماً في هذه الفقرة، نتخطاها لكي لا يقف السكربت بالكامل
                       continue
+
                   chapter_audio = AudioFileClip(audio_path)
                   audio_clips_list.append(chapter_audio)
-              progress_bar(len(full_sentences), len(full_sentences), "🎙️ معالجة وتحويل الصوت")
+                  total_duration = chapter_audio.duration
 
-              if not audio_clips_list:
-                  print("❌ لم يتم توليد أي صوت، سيتم تخطي هذا الفيديو.")
-                  continue
+                  # --- إصلاح مشكلة التعليق في الترجمة عن طريق إضافة مهلة زمنية (Timeout) للترجمة ---
+                  chapter_eng = "cinematic highly detailed scene, dramatic lighting"
+                  try:
+                      with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                          future = executor.submit(translator.translate, chapter[:3500])
+                          # سيتم إعطاء المترجم 20 ثانية كحد أقصى، وإلا سيكمل لكي لا يعلق
+                          chapter_eng = future.result(timeout=20)
+                  except Exception:
+                      pass
 
-              # ترجمة القصة كاملة لوصف الصورة الواحدة
-              print("\n🌍 جاري ترجمة القصة لوصف الصورة...")
-              full_story_english = translator.translate(raw_story[:3000])
-              chars_desc = ", ".join(character_map.values()) if character_map else "شخصيات غامضة"
+                  # التعديل هنا: تقسيم وقت الفقرة على الفواصل، ليكون لكل فاصلة صورة، لكن يتم تغذيتها بالوصف المترجم للفقرة
+                  parts = [p.strip() for p in chapter.split('،') if len(p.strip()) > 0]
+                  if not parts:
+                      parts = [chapter]
+
+                  sub_duration = total_duration / len(parts)
+                  for j, part in enumerate(parts):
+                      image_tasks.append({
+                          "sentence_idx": len(audio_clips_list) - 1, # ربط الصورة برقم الصوت الفعلي
+                          "duration": sub_duration,
+                          "prompt_eng": chapter_eng
+                      })
+
+              progress_bar(len(full_sentences), len(full_sentences), "🎙️ معالجة وتحويل الصوت والترجمة")
+
+              total_images_needed = len(image_tasks)
 
               # ==========================================
-              # 4. توليد صورة واحدة فقط من AI Horde
+              # 4. التوليد عبر AI Horde (إصلاح مشكلة التوقف والتعليق)
               # ==========================================
-              print("\n[4/5] 🎨 جاري طلب صورة واحدة من AI Horde...")
+              print(f"\n[4/5] 🎨 طلب {total_images_needed} صورة من AI Horde بذكاء وإصرار (حسب كل فقرة وبدون صور عارية)...")
+
+              chars_desc = ", ".join(character_map.values())
+
               negative_prompt = "nsfw, nude, naked, nudity, explicit, adult, porn, cartoon, anime, 3d, sketches, worst quality, low quality, deformed, ugly, bad anatomy, bad hands, text, error, blurry, mutation"
+
               horde_url = "https://aihorde.net/api/v2/generate/async"
               headers = {"apikey": "0ENZZBFOx-U1PwqJY_n-FQ", "Content-Type": "application/json"}
 
-              master_prompt = f"{full_story_english}, ultra realistic, cinematic lighting, 8k, masterpiece, featuring {chars_desc}"
-              payload = {
-                  "prompt": f"{master_prompt} ### {negative_prompt}",
-                  "params": {"cfg_scale": 7.5, "width": 512, "height": 512, "steps": 30, "sampler_name": "k_euler_a", "n": 1},
-                  "models": ["Deliberate"],
-                  "nsfw": False,
-                  "censor_nsfw": True
-              }
+              pending_tasks = []
+              for idx, task in enumerate(image_tasks):
+                  master_prompt = f"{task['prompt_eng']}, featuring {chars_desc}, ultra realistic, photorealistic, RAW photo, 8k uhd, dslr, soft lighting, masterpiece"
+                  pending_tasks.append({
+                      "task_idx": idx,
+                      "prompt": f"{master_prompt} ### {negative_prompt}",
+                      "job_id": None,
+                      "status": "pending", # الحالات: pending, processing, done, failed
+                      "img_path": None,
+                      "retries": 0 # عدد المحاولات لتجنب اللوب اللانهائي
+                  })
 
-              single_img_path = None
-              try:
-                  response = requests.post(horde_url, json=payload, headers=headers, timeout=30)
-                  if response.status_code in [200, 202]:
-                      job_id = response.json().get("id")
-                      if job_id:
-                          print("⏳ انتظار اكتمال الصورة...")
-                          for _ in range(60):
-                              time.sleep(5)
-                              status_resp = requests.get(f"https://aihorde.net/api/v2/generate/status/{job_id}", timeout=20)
-                              if status_resp.status_code == 200:
-                                  data = status_resp.json()
+              horde_start = time.time()
+              while True:
+                  if time.time() - horde_start > 1800:
+                      print("\n⚠️ تجاوز توليد الصور الوقت المحدد (30 دقيقة)، سيتم الإكمال بالصور المتاحة لتجنب التعليق...")
+                      break
+
+                  # حساب المكتمل والفاشل لضمان تقدم المؤشر وعدم توقفه
+                  completed_count = sum(1 for t in pending_tasks if t["status"] in ["done", "failed"])
+                  progress_bar(completed_count, total_images_needed, "🎨 توليد وتحميل الصور المخصصة")
+
+                  if completed_count >= total_images_needed:
+                      break
+
+                  jobs_submitted_this_round = 0
+                  # تحديد عدد الطلبات النشطة لتجنب حظر التزامن من API (Concurrency)
+                  processing_count = sum(1 for t in pending_tasks if t["status"] == "processing")
+
+                  for t in pending_tasks:
+                      if t["status"] == "pending" and processing_count < 5:
+                          payload = {
+                              "prompt": t["prompt"],
+                              "params": {
+                                  "cfg_scale": 7.5,
+                                  "width": 512,
+                                  "height": 512,
+                                  "steps": 30,
+                                  "sampler_name": "k_euler_a",
+                                  "n": 1
+                              },
+                              "models": ["Deliberate"],
+                              "nsfw": False,
+                              "censor_nsfw": True
+                          }
+                          try:
+                              response = requests.post(horde_url, json=payload, headers=headers, timeout=20)
+                              if response.status_code in [200, 202]:
+                                  job = response.json()
+                                  if "id" in job:
+                                      t["job_id"] = job["id"]
+                                      t["status"] = "processing"
+                                      processing_count += 1
+                                      jobs_submitted_this_round += 1
+                                  else:
+                                      t["retries"] += 1
+                              else:
+                                  t["retries"] += 1
+                          except:
+                              t["retries"] += 1
+
+                          # إذا فشل الطلب أكثر من 3 مرات نعتبره failed لكي يكمل السكربت
+                          if t["retries"] > 3:
+                              t["status"] = "failed"
+
+                  # إذا لم يتم قبول أي طلب والكل قيد الانتظار، ننتظر قليلاً
+                  if jobs_submitted_this_round == 0 and processing_count == 0:
+                      time.sleep(5)
+
+                  # فحص حالات الطلبات التي يتم معالجتها حالياً
+                  for t in pending_tasks:
+                      if t["status"] == "processing":
+                          try:
+                              check = requests.get(f"https://aihorde.net/api/v2/generate/status/{t['job_id']}", timeout=20)
+                              if check.status_code == 200:
+                                  data = check.json()
                                   if data.get("done"):
-                                      img_url = data["generations"][0]["img"]
-                                      img_data = requests.get(img_url, timeout=30)
-                                      if img_data.status_code == 200:
-                                          single_img_path = "single_image.webp"
-                                          with open(single_img_path, "wb") as f:
-                                              f.write(img_data.content)
-                                          print("✅ تم تحميل الصورة الواحدة بنجاح!")
-                                          break
+                                      img_path = f"horde_img_{t['task_idx']}.webp"
+                                      try:
+                                          img_url = data["generations"][0]["img"]
+                                          img_res = requests.get(img_url, timeout=30)
+                                          if img_res.status_code == 200:
+                                              with open(img_path, 'wb') as f_img:
+                                                  f_img.write(img_res.content)
+                                              t["img_path"] = img_path
+                                              t["status"] = "done"
+                                          else:
+                                              t["retries"] += 1
+                                              t["status"] = "pending" if t["retries"] <= 3 else "failed"
+                                      except:
+                                          t["retries"] += 1
+                                          t["status"] = "pending" if t["retries"] <= 3 else "failed"
                                   elif data.get("faulted"):
-                                      print("⚠️ فشل توليد الصورة")
-                                      break
-              except Exception as e:
-                  print(f"⚠️ خطأ في طلب الصورة: {e}")
+                                      t["retries"] += 1
+                                      t["status"] = "pending" if t["retries"] <= 3 else "failed"
+                          except:
+                              pass # ننتظر الفحص القادم
 
-              if not single_img_path or not os.path.exists(single_img_path):
-                  print("⚠️ استخدام صورة احتياطية سوداء")
-                  single_img_path = "fallback.webp"
-                  if not os.path.exists(single_img_path):
-                      img = Image.new('RGB', (512, 512), color='black')
-                      img.save(single_img_path)
+                  time.sleep(3) # فحص الحالات كل 3 ثواني لتسريع العملية
+
+              downloaded_images = [t["img_path"] for t in pending_tasks if t["img_path"] is not None]
+              
+              if not downloaded_images:
+                  print("❌ لم يتم تحميل أي صور، سيتم تخطي هذا الفيديو والمحاولة مجدداً.")
+                  continue
+
+              print("\n✅ تم جلب جميع الصور المطلوبة والمترجمة بنجاح وبأمان تام!")
 
               # ==========================================
-              # 5. تجميع الفيديو بصورة واحدة طوال المدة
+              # 5. تجميع الفيديو وإنتاج الرندر (سرعة طلقة 🚀 وبدون نصوص أو زوم)
               # ==========================================
-              print("\n[5/5] 🎬 تجميع الفيديو بصورة واحدة ثابتة...")
+              print("\n[5/5] 🎬 تجميع الكليبات وإنتاج الفيديو (سرعة طلقة 🚀)...")
 
               def prepare_static_image(img_path):
                   img_pil = Image.open(img_path).convert("RGB")
@@ -399,23 +520,57 @@ jobs:
                   img_w, img_h = img_pil.size
                   ratio = max(base_w/img_w, base_h/img_h)
                   new_w, new_h = int(img_w * ratio), int(img_h * ratio)
+
                   img_resized = img_pil.resize((new_w, new_h), Image.Resampling.BILINEAR)
                   left = (new_w - base_w) // 2
                   top = (new_h - base_h) // 2
                   final_img = img_resized.crop((left, top, left + base_w, top + base_h))
                   return np.array(final_img)
 
-              img_array = prepare_static_image(single_img_path)
-              total_duration = sum(c.duration for c in audio_clips_list)
+              clips = []
+              current_img_idx = 0
 
-              video_clip = ImageClip(img_array).set_duration(total_duration)
-              final_audio = CompositeAudioClip(audio_clips_list)
-              final_clip = video_clip.set_audio(final_audio)
+              # نقوم بالدوران حول عدد الجمل/الفصول (audio_clips_list) لضمان استمرارية الصوت
+              for i in range(len(audio_clips_list)):
+                  progress_bar(i, len(audio_clips_list), "🎞️ تجهيز المشاهد")
+                  
+                  # استخراج كافة المهام (الصور) المرتبطة بهذه الجملة حصراً
+                  chapter_tasks = [t for t in image_tasks if t["sentence_idx"] == i]
+                  
+                  current_sentence_subclips = []
+                  for task in chapter_tasks:
+                      # تجنب خطأ الخروج عن نطاق الصور
+                      if current_img_idx < len(downloaded_images):
+                          img_path = downloaded_images[current_img_idx]
+                      else:
+                          img_path = downloaded_images[-1]
 
-              final_v = "final_story.mp4"
+                      img_array = prepare_static_image(img_path)
+                      # إنشاء كليب الصورة بالمدة المحددة لها (بين الفواصل)
+                      sub_clip = ImageClip(img_array).set_duration(task["duration"])
+                      current_sentence_subclips.append(sub_clip)
+                      current_img_idx += 1
+
+                  if current_sentence_subclips:
+                      # دمج الصور الخاصة بهذه الجملة فقط
+                      visual_block = concatenate_videoclips(current_sentence_subclips, method="chain")
+                      # تركيب ملف الصوت الكامل للجملة فوق كتلة الصور (هنا يكمن سر الحل)
+                      # الصوت الآن يعمل كقطعة واحدة مستمرة من بداية الجملة لنهايتها مهما تعددت الصور
+                      sentence_clip = visual_block.set_audio(audio_clips_list[i])
+                      clips.append(sentence_clip)
+
+              progress_bar(len(audio_clips_list), len(audio_clips_list), "🎞️ تجهيز المشاهد")
+
+              final_v = f"final_story.mp4"
+              # دمج الفصول المكتملة مع بعضها
+              final_video = concatenate_videoclips(clips, method="chain")
+
               cpu_cores = multiprocessing.cpu_count()
+
+              # تفعيل شريط الرندر المخصص والثابت الذي برمجناه في الأعلى
               custom_logger = CleanRenderLogger()
-              final_clip.write_videofile(
+
+              final_video.write_videofile(
                   final_v,
                   fps=15,
                   codec="libx264",
@@ -425,10 +580,12 @@ jobs:
                   logger=custom_logger
               )
 
-              final_clip.close()
-              for c in audio_clips_list:
+              # تحرير الذاكرة العشوائية (RAM) لتجنب التقطيع في الفيديوهات القادمة
+              final_video.close()
+              for c in clips:
                   c.close()
               gc.collect()
+
               print("✅ تم الانتهاء من رندر الفيديو بنجاح!")
 
               catbox_url = upload_to_catbox(final_v)
@@ -442,11 +599,11 @@ jobs:
                       creds = Credentials.from_authorized_user_info(creds_data)
                       youtube = build('youtube', 'v3', credentials=creds)
                       video_number = len(open(HISTORY_FILE).readlines()) if os.path.exists(HISTORY_FILE) else 1
+
                       raw_yt_title = f"{title} السلسلة الكاملة والمدبلجة بالعربي "
-                      if not raw_yt_title.strip():
-                          raw_yt_title = f"#{video_number}"
-                      if len(raw_yt_title) > 95:
-                          raw_yt_title = raw_yt_title[:95] + "..."
+                      if not raw_yt_title.strip(): raw_yt_title = f"#{video_number}"
+                      if len(raw_yt_title) > 95: raw_yt_title = raw_yt_title[:95] + "..."
+
                       body = {
                           'snippet': {'title': raw_yt_title, 'description': f'ملخص ومراجعة مسلسل {topic}', 'categoryId': '24'},
                           'status': {'privacyStatus': 'public', 'selfDeclaredMadeForKids': False}
@@ -454,22 +611,23 @@ jobs:
                       media = MediaFileUpload(final_v, chunksize=-1, resumable=True)
                       response = youtube.videos().insert(part=','.join(body.keys()), body=body, media_body=media).execute()
                       print(f"✅ تم الرفع ليوتيوب بنجاح: https://www.youtube.com/watch?v={response['id']}")
+
                       with open(HISTORY_FILE, "a", encoding="utf-8") as f:
                           f.write(f"{topic}|{datetime.now().strftime('%Y-%m-%d')}\n")
               except Exception as e:
                   print(f"❌ فشل يوتيوب: {e}")
 
+              # تنظيف كل الملفات المؤقتة
               for f in os.listdir():
                   if f.endswith((".mp3", ".wav", ".jpg", ".webp")) and f != "fallback.webp":
-                      try:
-                          os.remove(f)
-                      except:
-                          pass
+                      try: os.remove(f)
+                      except: pass
 
               print("\n" + "="*50)
               print(f"✅ تم الانتهاء بنجاح من مسلسل: {topic}!")
               print("⏳ جاري الانتظار 60 ثانية قبل البدء في إنتاج الفيديو التالي...")
               print("="*50)
+
               time.sleep(60)
           EOF
           python script.py
