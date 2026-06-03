@@ -34,6 +34,8 @@ jobs:
         env:
           YOUTUBE_CREDENTIALS: ${{ secrets.YOUTUBE_CREDENTIALS }}
         run: |
+          echo "$YOUTUBE_CREDENTIALS" | base64 -d > /tmp/creds.json
+          python script.py
           cat << 'EOF' > script.py
           # ==========================================
           # 0. إعدادات بيئة الكروت (تم تنظيفها لتناسب المعالجة الجديدة)
@@ -438,7 +440,8 @@ jobs:
               print("\n[6/6] 📤 جاري الرفع إلى يوتيوب (يرجى الانتظار حتى تكتمل العملية)...")
               try:
                   if 'YOUTUBE_CREDENTIALS' in os.environ:
-                      creds_data = json.loads(os.environ['YOUTUBE_CREDENTIALS'])
+                     with open('/tmp/creds.json', 'r') as f:
+                     creds_data = json.load(f)
                       creds = Credentials.from_authorized_user_info(creds_data)
                       youtube = build('youtube', 'v3', credentials=creds)
                       video_number = len(open(HISTORY_FILE).readlines()) if os.path.exists(HISTORY_FILE) else 1
